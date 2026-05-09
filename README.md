@@ -42,7 +42,7 @@
 ### 安裝
 
 1. 下載本項目的 `main.js` 和 `manifest.json` 文件。
-2. 在你的 Obsidian 庫的 `.obsidian/plugins/` 目錄下，創建一個名為 `custom-search` 的文件夾。
+2. 在 Obsidian 庫的 `.obsidian/plugins/` 目錄下，創建一個名為 `custom-search` 的文件夾。
 3. 將下載的兩個文件放入 `custom-search` 文件夾中。
 4. 在 Obsidian 中，進入 `設置` → `第三方插件`，**禁用安全模式**。
 5. 在已安裝插件列表中，啟用 `Custom Search` 插件。
@@ -422,8 +422,6 @@ line:/為顯自師[，\.]?其體尊高.*故先讚德/ path:^kosa/ju/
 ```
 \!important        # 匹配以「!important」開頭的內容
 ```
-
-你說得對，我修正一下。
 
 ---
 
