@@ -1,0 +1,14 @@
+{
+  "name": "custom-search",
+  "version": "2.1.0",
+  "description": "Custom search plugin for Obsidian",
+  "main": "main.js",
+  "scripts": {
+    "dev": "node esbuild.config.mjs dev",
+    "build": "node esbuild.config.mjs production"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.0"
+  }
+}
+
