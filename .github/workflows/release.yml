@@ -31,6 +31,7 @@ jobs:
           files: |
             main.js
             manifest.json
+          body_path: CHANGELOG.md
           draft: false
           prerelease: false
-          generate_release_notes: true
+          generate_release_notes: false
