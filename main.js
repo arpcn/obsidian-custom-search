@@ -3047,7 +3047,7 @@ class SearchResultView extends ItemView {
 
 // ==================== 插件設置 ====================
 const DEFAULT_SETTINGS = {
-    version: "2.1.0",  // 主版本.次版本.修訂版本。版本號，用於數據遷移
+    version: "2.1.1",  // 主版本.次版本.修訂版本。版本號，用於數據遷移
 
     enableBooleanQuery: false,  // 布爾查詢語法開關
     defaultDisplayMode: 'B', // 'A' 或 'B'
