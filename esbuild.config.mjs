@@ -12,6 +12,7 @@ const context = await esbuild.context({
     external: ["obsidian"],
     minify: isProduction,
     sourcemap: !isProduction,
+    allowOverwrite: true,
 });
 
 if (isProduction) {
