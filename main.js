@@ -2218,8 +2218,7 @@ class SearchResultView extends ItemView {
             const groups = this.plugin.settings.fileGroups?.groups || {};
             const group = groups[rangeRef.name];
             if (group && group.patterns && group.patterns.length > 0) {
-                patternsToUse = patternsToRegexArray(group.patterns);
-                isPreset = true;
+                patternsToUse = group.patterns.join('\n');
                 rangeDisplay = `組：${rangeRef.name}`;
             } else {
                 new Notice(`文件組「${rangeRef.name}」不存在或為空`);
@@ -2232,16 +2231,15 @@ class SearchResultView extends ItemView {
             const combinations = this.plugin.settings.fileGroups?.combinations || {};
             const combo = combinations[rangeRef.name];
             if (combo && combo.groups && combo.groups.length > 0) {
-                const patternsArray = [];
+                const allPatterns = [];
                 for (const groupName of combo.groups) {
                     const group = groups[groupName];
                     if (group && group.patterns) {
-                        patternsArray.push(...group.patterns);
+                        allPatterns.push(...group.patterns);
                     }
                 }
-                if (patternsArray.length > 0) {
-                    patternsToUse = patternsToRegexArray(patternsArray);
-                    isPreset = true;
+                if (allPatterns.length > 0) {
+                    patternsToUse = allPatterns.join('\n');
                     rangeDisplay = `組合：${rangeRef.name}`;
                 } else {
                     new Notice(`組合「${rangeRef.name}」無效`);
@@ -2267,7 +2265,6 @@ class SearchResultView extends ItemView {
             }
             if (validPatterns.length > 0) {
                 patternsToUse = validPatterns.join('\n');
-                isPreset = false;
                 // 生成顯示文字
                 if (rangeRef.type === "group") {
                     rangeDisplay = `組：${rangeRef.name}（改）`;
