@@ -19,7 +19,7 @@
 - [常見問題](#-常見問題)
 - [技術說明](#-技術說明)
 - [更新日誌](#-更新日誌)
-- [Custom-Search vs Obsidian原生搜索 對比](#-Custom-SearchvsObsidian原生搜索對比)
+- [Custom-Search vs Obsidian原生搜索 對比](#-custom-search-vs-obsidian原生搜索-對比)
 
 ---
 
