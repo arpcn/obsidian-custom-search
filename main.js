@@ -961,20 +961,79 @@ class SearchResultView extends ItemView {
                    (code >= 0x3000 && code <= 0x303f);     // 中日韓符號
         };
         
-        // 計算字符串的單位長度（全角=2，半角=1）
-        const getUnitLength = (str) => {
+        // 輔助函數：判斷是否為小字符（需要折算小寬度）
+        const isTibetanSpecial = (char) => {
+            // ་ (U+0F0B) 藏文分詞符，། (U+0F0D) 藏文句尾符
+            const code = char.charCodeAt(0);
+            return code === 0x0F0B || code === 0x0F0D;
+        };
+        
+        // 輔助函數：判斷是否為零寬度疊加字符（零寬度，不折算）
+        const isTibetanCombining = (char) => {
+            const code = char.charCodeAt(0);
+            // 藏文疊加字符範圍：U+0F90 - U+0FBC（部分）
+            // 以及 U+0F71 - U+0F88（元音符號）
+            return (code >= 0x0F71 && code <= 0x0F88) ||  // 藏文元音符號
+                   (code >= 0x0F90 && code <= 0x0FBC) ||  // 藏文疊加字符
+                   code === 0x0F69 ||  // ྩ
+                   code === 0x0F6A ||  // ྪ
+                   code === 0x0F6B ||  // ྫ
+                   code === 0x0F6C ||  // ྫྷ
+                   code === 0x0F6D ||  // ྭ
+                   code === 0x0F6E ||  // ྮ
+                   code === 0x0F6F ||  // ྯ
+                   code === 0x0F70 ||  // ྰ
+                   code === 0x0F71 ||  // ྱ
+                   code === 0x0F72 ||  // ྲ
+                   code === 0x0F73 ||  // ླ
+                   code === 0x0F74 ||  // ྴ
+                   code === 0x0F75 ||  // ྵ
+                   code === 0x0F76 ||  // ྶ
+                   code === 0x0F77 ||  // ྷ
+                   code === 0x0F78 ||  // ྸ
+                   code === 0x0F79 ||  // ྐྵ
+                   code === 0x0F7A ||  // ྺ
+                   code === 0x0F7B ||  // ྻ
+                   code === 0x0F7C ||  // ྼ
+                   (code >= 0x0F8D && code <= 0x0F9F);    // 其他疊加範圍
+        };
+        
+        // 判斷是否為需要完全跳過的零寬度字符（不佔水平空間）
+        const isTibetanZeroWidth = (char) => {
+            return isTibetanCombining(char);
+        };
+        
+        // 計算字符串的單位長度
+        // 參數: str - 字符串, skipZeroWidth - 是否跳過零寬度字符, skipSpecial - 是否跳過特殊字符
+        const getUnitLength = (str, skipZeroWidth = true, skipSpecial = true) => {
             let units = 0;
             for (const char of str) {
+                if (skipZeroWidth && isTibetanZeroWidth(char)) {
+                    continue;  // 跳過零寬度疊加字符
+                }
+                if (skipSpecial && isTibetanSpecial(char)) {
+                    continue;  // 跳過小字符（後續單獨折算）
+                }
                 units += isFullwidth(char) ? 2 : 1;
             }
             return units;
         };
-
+        
         // 根據單位長度截取字符串
         const truncateByUnits = (str, maxUnits) => {
             let units = 0;
             let result = '';
             for (const char of str) {
+                // 零寬度疊加字符：直接保留，不計入長度
+                if (isTibetanZeroWidth(char)) {
+                    result += char;
+                    continue;
+                }
+                // 小字符：直接保留，不計入長度（後續折算）
+                if (isTibetanSpecial(char)) {
+                    result += char;
+                    continue;
+                }
                 const charUnits = isFullwidth(char) ? 2 : 1;
                 if (units + charUnits > maxUnits) break;
                 units += charUnits;
@@ -998,7 +1057,8 @@ class SearchResultView extends ItemView {
             if (match) {
                 keywordStart = match.index;
                 keywordEnd = keywordStart + match[0].length;
-                keywordUnits = getUnitLength(match[0]);
+                // 計算關鍵字單位長度時也需要跳過小字符
+                keywordUnits = getUnitLength(match[0], true, true);
             }
             // 重置正則的 lastIndex
             highlightRegex.lastIndex = 0;
@@ -1009,29 +1069,31 @@ class SearchResultView extends ItemView {
                 if (match) {
                     keywordStart = match.index;
                     keywordEnd = keywordStart + match[0].length;
-                    keywordUnits = getUnitLength(match[0]);
+                    keywordUnits = getUnitLength(match[0], true, true);
                 }
             } catch (e) {}
         } else {
             keywordStart = lineContent.indexOf(keyword);
             if (keywordStart !== -1) {
                 keywordEnd = keywordStart + keyword.length;
-                keywordUnits = getUnitLength(keyword);
+                keywordUnits = getUnitLength(keyword, true, true);
             }
         }
         
-        const totalUnits = getUnitLength(lineContent);
+        // 計算整行的單位長度（跳過小字符）
+        const totalUnits = getUnitLength(lineContent, true, true);
+        
         if (keywordStart === -1 || totalUnits <= availableUnits) {
             return lineContent;
         }
 
-        // 計算關鍵字前的單位數
+        // 計算關鍵字前的單位數（跳過小字符）
         const beforeKeyword = lineContent.substring(0, keywordStart);
-        const beforeUnits = getUnitLength(beforeKeyword);
+        const beforeUnits = getUnitLength(beforeKeyword, true, true);
         
-        // 計算關鍵字後的單位數
+        // 計算關鍵字後的單位數（跳過小字符）
         const afterKeyword = lineContent.substring(keywordEnd);
-        const afterUnits = getUnitLength(afterKeyword);
+        const afterUnits = getUnitLength(afterKeyword, true, true);
         
         // 決定兩邊各取多少單位
         const remainingUnits = availableUnits - keywordUnits;
@@ -1048,29 +1110,111 @@ class SearchResultView extends ItemView {
             rightUnits = afterUnits;
         }
         
-        // 截取左邊
+        // 截取左邊（從 keywordStart 向左，跳過小字符）
         let leftPart = '';
         let units = 0;
         for (let i = keywordStart - 1; i >= 0; i--) {
             const char = lineContent[i];
+            // 零寬度疊加字符：直接添加，不計入長度
+            if (isTibetanZeroWidth(char)) {
+                leftPart = char + leftPart;
+                continue;
+            }
+            // 小字符：直接添加，不計入長度
+            if (isTibetanSpecial(char)) {
+                leftPart = char + leftPart;
+                continue;
+            }
             const charUnits = isFullwidth(char) ? 2 : 1;
             if (units + charUnits > leftUnits) break;
             leftPart = char + leftPart;
             units += charUnits;
         }
         
-        // 截取右邊
+        // 截取右邊（從 keywordEnd 向右，跳過小字符）
         let rightPart = '';
         units = 0;
         for (let i = keywordEnd; i < lineContent.length; i++) {
             const char = lineContent[i];
+            // 零寬度疊加字符：直接添加，不計入長度
+            if (isTibetanZeroWidth(char)) {
+                rightPart += char;
+                continue;
+            }
+            // 小字符：直接添加，不計入長度
+            if (isTibetanSpecial(char)) {
+                rightPart += char;
+                continue;
+            }
             const charUnits = isFullwidth(char) ? 2 : 1;
             if (units + charUnits > rightUnits) break;
             rightPart += char;
             units += charUnits;
         }
         
-        return leftPart + lineContent.substring(keywordStart, keywordEnd) + rightPart;
+        // 構建截取結果
+        let result = leftPart + lineContent.substring(keywordStart, keywordEnd) + rightPart;
+        
+        // 統計結果中的小字符數量，折算實際寬度（疊加字符不折算寬度）
+        let tibetanSpecialCount = 0;
+        for (const char of result) {
+            if (isTibetanSpecial(char)) {
+                tibetanSpecialCount++;
+            }
+        }
+
+        // 每個分詞符/句尾符折算為 0.2 單位
+        const tibetanUnits = tibetanSpecialCount * 0.2;
+        if (tibetanUnits > 0) {
+            // 如果小字符佔用了額外空間，需要從兩端預留
+            // 從左右兩端各減去一半的小字符寬度
+            const halfTibetanUnits = Math.ceil(tibetanUnits / 2);
+            
+            // 重新截取左邊（減少 leftUnits 來預留空間）
+            let adjustedLeftUnits = Math.max(0, leftUnits - halfTibetanUnits);
+            leftPart = '';
+            units = 0;
+            for (let i = keywordStart - 1; i >= 0; i--) {
+                const char = lineContent[i];
+                if (isTibetanZeroWidth(char)) {
+                    leftPart = char + leftPart;
+                    continue;
+                }
+                if (isTibetanSpecial(char)) {
+                    leftPart = char + leftPart;
+                    continue;
+                }
+                const charUnits = isFullwidth(char) ? 2 : 1;
+                if (units + charUnits > adjustedLeftUnits) break;
+                leftPart = char + leftPart;
+                units += charUnits;
+            }
+            
+            // 重新截取右邊（減少 rightUnits 來預留空間）
+            let adjustedRightUnits = Math.max(0, rightUnits - halfTibetanUnits);
+            rightPart = '';
+            units = 0;
+            for (let i = keywordEnd; i < lineContent.length; i++) {
+                const char = lineContent[i];
+                if (isTibetanZeroWidth(char)) {
+                    rightPart += char;
+                    continue;
+                }
+                if (isTibetanSpecial(char)) {
+                    rightPart += char;
+                    continue;
+                }
+                const charUnits = isFullwidth(char) ? 2 : 1;
+                if (units + charUnits > adjustedRightUnits) break;
+                rightPart += char;
+                units += charUnits;
+            }
+            
+            // 重新構建結果
+            result = leftPart + lineContent.substring(keywordStart, keywordEnd) + rightPart;
+        }
+        
+        return result;
     }
 
     // 轉義腳注行
