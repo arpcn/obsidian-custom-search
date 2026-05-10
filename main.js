@@ -5671,6 +5671,7 @@ T44n1851_大乘義章\\d+\\.md
     // 顯示自定義文件組彈窗
     async showCustomFileGroupsDialog(selectedText, currentSearchText = null) {
         const effectiveSearchText = currentSearchText !== null ? currentSearchText : selectedText;
+        const plugin = this;
         let storageData = await this.loadCustomFileGroups();
         let groups = storageData.groups || {};
         let combinations = storageData.combinations || {};
@@ -5823,7 +5824,96 @@ T44n1851_大乘義章\\d+\\.md
                 }
                 itemSelect.innerHTML += '</optgroup>';
             };
-            
+
+            // ========== 共用改名函數 ==========
+            /**
+             * 重命名文件組或組合（立即保存）
+             * @param {string} type - 'group' 或 'combination'
+             * @param {string} oldName - 舊名稱
+             * @param {string} newName - 新名稱
+             */
+            const renameItem = async (type, oldName, newName) => {
+                if (type === 'group') {
+                    // 獲取原始順序
+                    const groupNames = Object.keys(currentGroups);
+                    // 按原始順序重新構建對象
+                    const newGroups = {};
+                    for (const name of groupNames) {
+                        if (name === oldName) {
+                            newGroups[newName] = currentGroups[oldName];
+                        } else {
+                            newGroups[name] = currentGroups[name];
+                        }
+                    }
+                    currentGroups = newGroups;
+                    
+                    // 更新組合中的引用
+                    for (const combo of Object.values(currentCombinations)) {
+                        if (combo.groups && combo.groups.includes(oldName)) {
+                            const idx = combo.groups.indexOf(oldName);
+                            combo.groups[idx] = newName;
+                        }
+                    }
+                    
+                    // 更新默認預定範圍
+                    if (currentDefaultPreset && currentDefaultPreset.type === 'group' && currentDefaultPreset.name === oldName) {
+                        currentDefaultPreset.name = newName;
+                    }
+                } else if (type === 'combination') {
+                    // 獲取原始順序
+                    const comboNames = Object.keys(currentCombinations);
+                    // 按原始順序重新構建對象
+                    const newCombinations = {};
+                    for (const name of comboNames) {
+                        if (name === oldName) {
+                            newCombinations[newName] = currentCombinations[oldName];
+                        } else {
+                            newCombinations[name] = currentCombinations[name];
+                        }
+                    }
+                    currentCombinations = newCombinations;
+                    
+                    // 更新默認預定範圍
+                    if (currentDefaultPreset && currentDefaultPreset.type === 'combination' && currentDefaultPreset.name === oldName) {
+                        currentDefaultPreset.name = newName;
+                    }
+                }
+                
+                // 更新歷史搜索記錄
+                const history = plugin.settings.searchHistory;
+                if (history && history.items) {
+                    for (const item of history.items) {
+                        if (item.rangeRef && item.rangeRef.type === type && item.rangeRef.name === oldName) {
+                            item.rangeRef.name = newName;
+                        }
+                    }
+                }
+                
+                // 更新當前打開的結果面板
+                const view = this.app.workspace.getLeavesOfType(VIEW_TYPE_SEARCH_RESULT)[0]?.view;
+                if (view && view.currentRangeRef && view.currentRangeRef.type === type && view.currentRangeRef.name === oldName) {
+                    view.currentRangeRef.name = newName;
+                    if (view.currentRangeDisplay) {
+                        view.currentRangeDisplay = view.currentRangeDisplay.replace(oldName, newName);
+                    }
+                    view.refreshDisplay();
+                }
+                
+                // 立即保存到 data.json
+                await plugin.saveCustomFileGroups({ 
+                    groups: currentGroups, 
+                    combinations: currentCombinations, 
+                    defaultPreset: currentDefaultPreset 
+                });
+                
+                // 刷新面板
+                renderGroupsPanel();
+                renderCombinationsPanel();
+                updateItemSelect();
+                
+                new Notice(`已將「${oldName}」改名為「${newName}」`);
+            };
+
             const renderGroupsPanel = () => {
                 groupsPanel.innerHTML = '';
                 const groupsContainer = document.createElement('div');
@@ -5860,18 +5950,54 @@ T44n1851_大乘義章\\d+\\.md
                     
                     const btnGroup = document.createElement('div');
                     btnGroup.style.cssText = `display: flex; gap: 6px;`;
+                    // 編輯按鈕（放在刪除按鈕左邊）
+                    const editBtn = document.createElement('button');
+                    editBtn.textContent = '✏️';
+                    editBtn.style.cssText = `padding: 2px 8px; font-size: 11px; cursor: pointer;`;
+                    editBtn.onclick = async (e) => {
+                        e.stopPropagation();
+                        const inputModal = document.createElement('div');
+                        inputModal.style.cssText = `position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); background: var(--background-primary); border-radius: 12px; padding: 24px; z-index: 10001; min-width: 300px; border: 1px solid var(--background-modifier-border);`;
+                        inputModal.innerHTML = `<div style="margin-bottom:12px;">請輸入新的文件組名稱：</div><input type="text" style="width:100%; padding:8px; margin-bottom:16px;" value="${groupName}"><div style="display:flex; gap:10px; justify-content:flex-end;"><button id="ok" style="padding:6px 16px;">確定</button><button id="cancel" style="padding:6px 16px;">取消</button></div>`;
+                        document.body.appendChild(inputModal);
+                        const input = inputModal.querySelector('input');
+                        input.focus();
+                        input.select();
+                        inputModal.querySelector('#ok').onclick = async () => {
+                            const newName = input.value.trim();
+                            if (!newName) {
+                                new Notice('名稱不能為空');
+                                inputModal.remove();
+                                return;
+                            }
+                            if (newName === groupName) {
+                                inputModal.remove();
+                                return;
+                            }
+                            if (currentGroups[newName]) {
+                                new Notice(`文件組「${newName}」已存在`);
+                                inputModal.remove();
+                                return;
+                            }
+                            await renameItem('group', groupName, newName);
+                            inputModal.remove();
+                        };
+                        inputModal.querySelector('#cancel').onclick = () => inputModal.remove();
+                    };
+                    btnGroup.appendChild(editBtn);
                     const deleteBtn = document.createElement('button');
                     deleteBtn.textContent = '刪除';
                     deleteBtn.style.cssText = `padding: 2px 8px; font-size: 11px;`;
-                    deleteBtn.onclick = (e) => {
+                    deleteBtn.onclick = async (e) => {
                         e.stopPropagation();
                         delete currentGroups[groupName];
+                        await plugin.saveCustomFileGroups({ groups: currentGroups, combinations: currentCombinations, defaultPreset: currentDefaultPreset });
                         renderGroupsPanel();
                         renderCombinationsPanel();
                         updateItemSelect();
                     };
                     btnGroup.appendChild(deleteBtn);
-                    
+
                     header.appendChild(titleLeft);
                     header.appendChild(btnGroup);
                     
@@ -5890,8 +6016,8 @@ T44n1851_大乘義章\\d+\\.md
                     
                     // 初始調整高度 - 使用 setTimeout 确保 DOM 已渲染
                     setTimeout(() => autoResizeTextarea(), 0);
-                    
-                    textarea.addEventListener('input', () => {
+
+                    textarea.addEventListener('blur', async () => {
                         autoResizeTextarea();
                         // 保留排除行（以 ! 開頭），過濾純註釋行和空行
                         group.patterns = textarea.value.split(/\r?\n/).filter(l => {
@@ -5900,6 +6026,7 @@ T44n1851_大乘義章\\d+\\.md
                             if (trimmed.startsWith('#') && !trimmed.startsWith('\\#')) return false;
                             return true;
                         });
+                        await plugin.saveCustomFileGroups({ groups: currentGroups, combinations: currentCombinations, defaultPreset: currentDefaultPreset });
                         renderCombinationsPanel();
                     });
 
@@ -5944,10 +6071,11 @@ T44n1851_大乘義章\\d+\\.md
                     document.body.appendChild(inputModal);
                     const input = inputModal.querySelector('input');
                     input.focus();
-                    inputModal.querySelector('#ok').onclick = () => {
+                    inputModal.querySelector('#ok').onclick = async () => {
                         let newName = input.value.trim() || `組${Object.keys(currentGroups).length + 1}`;
                         if (!currentGroups[newName]) {
                             currentGroups[newName] = { patterns: [] };
+                            await this.plugin.saveCustomFileGroups({ groups: currentGroups, combinations: currentCombinations, defaultPreset: currentDefaultPreset });
                             renderGroupsPanel();
                             renderCombinationsPanel();
                             updateItemSelect();
@@ -5986,21 +6114,57 @@ T44n1851_大乘義章\\d+\\.md
                     
                     const btnGroup = document.createElement('div');
                     btnGroup.style.cssText = `display: flex; gap: 6px;`;
+                    // 編輯按鈕（放在刪除按鈕左邊）
+                    const editBtn = document.createElement('button');
+                    editBtn.textContent = '✏️';
+                    editBtn.style.cssText = `padding: 2px 8px; font-size: 11px; cursor: pointer;`;
+                    editBtn.onclick = async (e) => {
+                        e.stopPropagation();
+                        const inputModal = document.createElement('div');
+                        inputModal.style.cssText = `position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); background: var(--background-primary); border-radius: 12px; padding: 24px; z-index: 10001; min-width: 300px; border: 1px solid var(--background-modifier-border);`;
+                        inputModal.innerHTML = `<div style="margin-bottom:12px;">請輸入新的組合名稱：</div><input type="text" style="width:100%; padding:8px; margin-bottom:16px;" value="${comboName}"><div style="display:flex; gap:10px; justify-content:flex-end;"><button id="ok" style="padding:6px 16px;">確定</button><button id="cancel" style="padding:6px 16px;">取消</button></div>`;
+                        document.body.appendChild(inputModal);
+                        const input = inputModal.querySelector('input');
+                        input.focus();
+                        input.select();
+                        inputModal.querySelector('#ok').onclick = async () => {
+                            const newName = input.value.trim();
+                            if (!newName) {
+                                new Notice('名稱不能為空');
+                                inputModal.remove();
+                                return;
+                            }
+                            if (newName === comboName) {
+                                inputModal.remove();
+                                return;
+                            }
+                            if (currentCombinations[newName]) {
+                                new Notice(`組合「${newName}」已存在`);
+                                inputModal.remove();
+                                return;
+                            }
+                            await renameItem('combination', comboName, newName);
+                            inputModal.remove();
+                        };
+                        inputModal.querySelector('#cancel').onclick = () => inputModal.remove();
+                    };
+                    btnGroup.appendChild(editBtn);
                     const deleteBtn = document.createElement('button');
                     deleteBtn.textContent = '刪除';
                     deleteBtn.className = 'delete-combo-btn';
                     deleteBtn.style.cssText = `padding: 2px 8px; font-size: 11px;`;
-                    deleteBtn.onclick = (e) => {
+                    deleteBtn.onclick = async (e) => {
                         e.stopPropagation();
                         delete currentCombinations[comboName];
+                        await plugin.saveCustomFileGroups({ groups: currentGroups, combinations: currentCombinations, defaultPreset: currentDefaultPreset });
                         renderCombinationsPanel();
                         updateItemSelect();
                     };
                     btnGroup.appendChild(deleteBtn);
-                    
+
                     header.appendChild(titleLeft);
                     header.appendChild(btnGroup);
-                    
+
                     const contentArea = document.createElement('div');
                     contentArea.style.cssText = `padding: 0 10px 10px 10px; display: none;`;
                     
@@ -6095,10 +6259,11 @@ T44n1851_大乘義章\\d+\\.md
                     document.body.appendChild(inputModal);
                     const input = inputModal.querySelector('input');
                     input.focus();
-                    inputModal.querySelector('#ok').onclick = () => {
+                    inputModal.querySelector('#ok').onclick = async () => {
                         let newName = input.value.trim() || `組合${Object.keys(currentCombinations).length + 1}`;
                         if (!currentCombinations[newName]) {
                             currentCombinations[newName] = { groups: [] };
+                            await this.plugin.saveCustomFileGroups({ groups: currentGroups, combinations: currentCombinations, defaultPreset: currentDefaultPreset });
                             renderCombinationsPanel();
                             updateItemSelect();
                         }
@@ -6123,16 +6288,7 @@ T44n1851_大乘義章\\d+\\.md
             actionContainer.style.cssText = `margin-top: 16px; border-top: 1px solid var(--background-modifier-border); padding-top: 16px;`;
             actionContainer.createEl('div', { text: '選擇要應用的項目：', attr: { style: 'margin-bottom: 8px;' } });
             actionContainer.appendChild(itemSelect);
-            
-            const saveBtn = document.createElement('button');
-            saveBtn.textContent = '💾 保存所有文件組/組合';
-            saveBtn.style.cssText = `width: 100%; padding: 8px; margin-bottom: 12px; background: var(--interactive-accent); color: white; border: none; border-radius: 6px; cursor: pointer; font-weight: 500;`;
-            saveBtn.onclick = async () => {
-                await this.saveCustomFileGroups({ groups: currentGroups, combinations: currentCombinations, defaultPreset: currentDefaultPreset });
-                new Notice('已保存文件組和組合');
-            };
-            actionContainer.appendChild(saveBtn);
-            
+
             const actionRow = document.createElement('div');
             actionRow.style.cssText = `display: flex; gap: 10px; margin-bottom: 12px;`;
             
@@ -6357,6 +6513,98 @@ class CustomSearchSettingTab extends PluginSettingTab {
         super(app, plugin);
         this.plugin = plugin;
         this.currentTab = "search";
+    }
+
+    /**
+     * 創建可拖拽的列表行
+     * @param {HTMLElement} container - 父容器
+     * @param {Array} items - 數據數組
+     * @param {number} index - 當前項的索引
+     * @param {Function} onReorder - 排序完成後的回調 (fromIndex, toIndex) => void
+     * @param {boolean} isDraggable - 該行是否可拖拽（排除行為 false）
+     * @param {string} displayText - 顯示的文字
+     * @param {string} displayStyle - 顯示文字的樣式
+     * @returns {HTMLElement} 創建的行元素
+     */
+    createDraggableRow(container, items, index, onReorder, isDraggable, displayText, displayStyle = "") {
+        const row = container.createEl("div", {
+            attr: { style: "display: flex; align-items: center; gap: 8px; padding: 6px 8px; background: var(--background-secondary); border-radius: 6px;" }
+        });
+        
+        // 拖拽手柄
+        const dragHandle = row.createEl("span", {
+            text: "⋮⋮",
+            attr: { 
+                draggable: isDraggable ? "true" : "false",
+                style: `color: var(--text-muted); font-size: 16px; user-select: none; ${isDraggable ? 'cursor: grab;' : 'opacity: 0.3;'}`
+            }
+        });
+        
+        if (isDraggable) {
+            dragHandle.addEventListener('dragstart', (e) => {
+                e.dataTransfer.setData('text/plain', index);
+                e.dataTransfer.effectAllowed = 'move';
+                dragHandle.style.cursor = 'grabbing';
+            });
+            
+            dragHandle.addEventListener('dragend', () => {
+                dragHandle.style.cursor = 'grab';
+            });
+        }
+        
+        // 顯示文字
+        const textSpan = row.createEl("span", {
+            text: displayText,
+            attr: { style: `flex: 1; font-size: 13px; ${displayStyle}` }
+        });
+        
+        // 放置目標事件（只有可拖拽行才能接收放置）
+        if (isDraggable) {
+            row.addEventListener('dragover', (e) => {
+                e.preventDefault();
+                e.dataTransfer.dropEffect = 'move';
+            });
+            
+            row.addEventListener('drop', (e) => {
+                e.preventDefault();
+                const fromIndex = parseInt(e.dataTransfer.getData('text/plain'));
+                const toIndex = index;
+                if (fromIndex !== toIndex && !isNaN(fromIndex)) {
+                    onReorder(fromIndex, toIndex);
+                }
+            });
+        }
+        
+        // 上下箭頭按鈕容器
+        const arrowContainer = row.createEl("div", {
+            attr: { style: "display: flex; gap: 4px;" }
+        });
+        
+        const upBtn = arrowContainer.createEl("button", {
+            text: "↑",
+            attr: { style: `padding: 2px 6px; font-size: 11px; ${isDraggable ? 'cursor: pointer;' : 'opacity: 0.3; cursor: default;'}` }
+        });
+        
+        const downBtn = arrowContainer.createEl("button", {
+            text: "↓",
+            attr: { style: `padding: 2px 6px; font-size: 11px; ${isDraggable ? 'cursor: pointer;' : 'opacity: 0.3; cursor: default;'}` }
+        });
+        
+        if (isDraggable) {
+            upBtn.onclick = () => {
+                if (index > 0) {
+                    onReorder(index, index - 1);
+                }
+            };
+            
+            downBtn.onclick = () => {
+                if (index < items.length - 1) {
+                    onReorder(index, index + 1);
+                }
+            };
+        }
+        
+        return row;
     }
 
     display() {
@@ -6733,49 +6981,25 @@ class CustomSearchSettingTab extends PluginSettingTab {
             });
             
             finalPriority.forEach((groupName, idx) => {
-                const row = listEl.createEl("div", {
-                    attr: { style: "display: flex; align-items: center; gap: 8px; padding: 6px 8px; background: var(--background-secondary); border-radius: 6px;" }
-                });
+                // 文件組間沒有排除行概念，所有項都可拖拽
+                const displayText = `${idx + 1}. ${groupName}`;
                 
-                const dragHandle = row.createEl("span", {
-                    text: "⋮⋮",
-                    attr: { style: "cursor: grab; color: var(--text-muted); font-size: 16px; user-select: none;" }
-                });
-                
-                const nameSpan = row.createEl("span", {
-                    text: `${idx + 1}. ${groupName}`,
-                    attr: { style: "flex: 1; font-size: 13px;" }
-                });
-                
-                const upBtn = row.createEl("button", {
-                    text: "↑",
-                    attr: { style: "padding: 2px 6px; font-size: 11px; cursor: pointer;" }
-                });
-                upBtn.onclick = () => {
-                    if (idx > 0) {
-                        const temp = finalPriority[idx];
-                        finalPriority[idx] = finalPriority[idx - 1];
-                        finalPriority[idx - 1] = temp;
+                const row = this.createDraggableRow(
+                    listEl,                    // 容器
+                    finalPriority,             // 數據數組
+                    idx,                       // 當前索引
+                    (fromIndex, toIndex) => {  // 排序回調
+                        const temp = finalPriority[fromIndex];
+                        finalPriority[fromIndex] = finalPriority[toIndex];
+                        finalPriority[toIndex] = temp;
                         this.plugin.settings.groupPriority = finalPriority;
                         this.plugin.saveSettings();
                         refreshGroupPriority();
-                    }
-                };
-                
-                const downBtn = row.createEl("button", {
-                    text: "↓",
-                    attr: { style: "padding: 2px 6px; font-size: 11px; cursor: pointer;" }
-                });
-                downBtn.onclick = () => {
-                    if (idx < finalPriority.length - 1) {
-                        const temp = finalPriority[idx];
-                        finalPriority[idx] = finalPriority[idx + 1];
-                        finalPriority[idx + 1] = temp;
-                        this.plugin.settings.groupPriority = finalPriority;
-                        this.plugin.saveSettings();
-                        refreshGroupPriority();
-                    }
-                };
+                    },
+                    true,                      // 可拖拽
+                    displayText,               // 顯示文字
+                    ""                         // 無額外樣式
+                );
             });
         };
         
@@ -6859,70 +7083,36 @@ class CustomSearchSettingTab extends PluginSettingTab {
                         });
                         return;
                     }
-                
+
                     sortedPatterns.forEach((pattern, idx) => {
-                        // 檢查是否為排除行（以 ! 開頭，且不是轉義的 \!）
+                        // 檢查是否為排除行
                         const isExclude = pattern.trim().startsWith('!') && !pattern.trim().startsWith('\\!');
-                        // 排除行顯示時添加標記
                         const displayPattern = isExclude ? '🚫 ' + pattern : pattern;
-                        
-                        const row = patternListContainer.createEl("div", {
-                            attr: { style: "display: flex; align-items: center; gap: 8px; padding: 4px 8px; background: var(--background-primary); border-radius: 4px; border: 1px solid var(--background-modifier-border);" }
-                        });
-                        
-                        const dragHandle = row.createEl("span", {
-                            text: "⋮⋮",
-                            attr: { style: `color: var(--text-muted); font-size: 14px; user-select: none; ${isExclude ? 'opacity: 0.3;' : 'cursor: grab;'}` }
-                        });
-                        
                         const patternPreview = displayPattern.length > 60 ? displayPattern.substring(0, 57) + "..." : displayPattern;
-                        const nameSpan = row.createEl("span", {
-                            text: `${idx + 1}. ${patternPreview}`,
-                            attr: { style: `flex: 1; font-size: 11px; font-family: monospace; word-break: break-all; ${isExclude ? 'opacity: 0.7;' : ''}` }
-                        });
+                        const displayText = `${idx + 1}. ${patternPreview}`;
+                        const displayStyle = isExclude ? 'opacity: 0.7; font-family: monospace; font-size: 11px;' : 'font-family: monospace; font-size: 11px;';
                         
-                        const upBtn = row.createEl("button", {
-                            text: "↑",
-                            attr: { style: `padding: 2px 6px; font-size: 10px; ${isExclude ? 'opacity: 0.3; cursor: default;' : 'cursor: pointer;'}` }
-                        });
-                        if (!isExclude) {
-                            upBtn.onclick = () => {
-                                if (idx > 0) {
-                                    const temp = sortedPatterns[idx];
-                                    sortedPatterns[idx] = sortedPatterns[idx - 1];
-                                    sortedPatterns[idx - 1] = temp;
-                                    // 更新順序映射
-                                    const newOrder = {};
-                                    sortedPatterns.forEach((p, i) => {
-                                        newOrder[p] = i;
-                                    });
-                                    this.plugin.settings.groupPatternOrder[groupName] = newOrder;
-                                    this.plugin.saveSettings();
-                                    refreshPatternList();
-                                }
-                            };
-                        }
-                        
-                        const downBtn = row.createEl("button", {
-                            text: "↓",
-                            attr: { style: `padding: 2px 6px; font-size: 10px; ${isExclude ? 'opacity: 0.3; cursor: default;' : 'cursor: pointer;'}` }
-                        });
-                        if (!isExclude) {
-                            downBtn.onclick = () => {
-                                if (idx < sortedPatterns.length - 1) {
-                                    const temp = sortedPatterns[idx];
-                                    sortedPatterns[idx] = sortedPatterns[idx + 1];
-                                    sortedPatterns[idx + 1] = temp;
-                                    const newOrder = {};
-                                    sortedPatterns.forEach((p, i) => {
-                                        newOrder[p] = i;
-                                    });
-                                    this.plugin.settings.groupPatternOrder[groupName] = newOrder;
-                                    this.plugin.saveSettings();
-                                    refreshPatternList();
-                                }
-                            };
-                        }
+                        const row = this.createDraggableRow(
+                            patternListContainer,      // 容器
+                            sortedPatterns,            // 數據數組
+                            idx,                       // 當前索引
+                            (fromIndex, toIndex) => {  // 排序回調
+                                const temp = sortedPatterns[fromIndex];
+                                sortedPatterns[fromIndex] = sortedPatterns[toIndex];
+                                sortedPatterns[toIndex] = temp;
+                                // 更新順序映射
+                                const newOrder = {};
+                                sortedPatterns.forEach((p, i) => {
+                                    newOrder[p] = i;
+                                });
+                                this.plugin.settings.groupPatternOrder[groupName] = newOrder;
+                                this.plugin.saveSettings();
+                                refreshPatternList();
+                            },
+                            !isExclude,                // 可拖拽（排除行不可拖拽）
+                            displayText,               // 顯示文字
+                            displayStyle               // 樣式
+                        );
                     });
                 };
 
