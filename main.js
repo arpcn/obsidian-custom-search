@@ -4878,6 +4878,34 @@ class CustomSearchPlugin extends Plugin {
             booleanQueryRow.appendChild(diacriticIgnoreLabel);
             modal.appendChild(booleanQueryRow);
 
+            // ========== 公共函數：應用組/組合到自定義範圍 ==========
+            const applyGroupOrCombinationToCustomRange = (rangeName, rangeType, patternsText, originalPatterns) => {
+                if (!rangeName || !rangeType || !patternsText) return false;
+                
+                // 展開編輯區並填充內容
+                if (!isExpanded) expandToMultiLine();
+                multiLineTextarea.value = patternsText;
+                autoResizeTextarea();
+                
+                // 保存原始信息，等用戶提交時判斷
+                this.pendingRangeInfo = {
+                    name: rangeName,
+                    type: rangeType === '文件組' ? 'group' : 'combination',
+                    rangeType: rangeType,
+                    originalPatterns: originalPatterns
+                };
+                
+                // 設置自定義範圍按鈕的 📌 狀態
+                setCustomButtonState(rangeName, rangeType, patternsText);
+                
+                // 更新高亮狀態（自定義範圍有內容）
+                updateButtonHighlight();
+                
+                new Notice(`✅ 已載入「${rangeName}」(${rangeType})，可繼續編輯`);
+                return true;
+            };
+            // ========== 公共函數定義結束 ==========
+
             const fileNameHeader = document.createElement('div');
             fileNameHeader.style.cssText = `display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 6px; margin-top: 0px;`;
             
@@ -4886,10 +4914,128 @@ class CustomSearchPlugin extends Plugin {
             fileNameLabel.style.cssText = `font-size: 13px; font-weight: 500;`;
             fileNameHeader.appendChild(fileNameLabel);
             
+            // 右側容器
+            const headerBtnContainer = document.createElement('div');
+            headerBtnContainer.style.cssText = `display: flex; gap: 8px;`;
+            
             const hintBtn = document.createElement('button');
-            hintBtn.textContent = '📋 查看文件模式示例';
+            hintBtn.textContent = '📋 查看示例';
             hintBtn.style.cssText = `background: transparent; border: none; color: var(--text-accent); cursor: pointer; font-size: 11px; padding: 2px 6px; border-radius: 4px;`;
             
+            // 選已有組下拉框（始終可見）
+            const groupSelect = document.createElement('select');
+            groupSelect.style.cssText = `background: transparent; border: 1px solid var(--background-modifier-border); border-radius: 4px; font-size: 11px; padding: 2px 8px; color: var(--text-muted); cursor: pointer;`;
+            groupSelect.title = '從已有的文件組或組合中選擇';
+            
+            // 更新下拉框內容的函數
+            const updateGroupSelect = () => {
+                groupSelect.innerHTML = '<option value="">-- 選已有組 --</option>';
+                const storageData = this.settings.fileGroups || { groups: {}, combinations: {} };
+                const groups = storageData.groups || {};
+                const combinations = storageData.combinations || {};
+                
+                if (Object.keys(groups).length > 0) {
+                    const groupOptgroup = document.createElement('optgroup');
+                    groupOptgroup.label = '📚 文件組';
+                    for (const groupName of Object.keys(groups)) {
+                        const option = document.createElement('option');
+                        option.value = `group:${groupName}`;
+                        option.textContent = groupName;
+                        groupOptgroup.appendChild(option);
+                    }
+                    groupSelect.appendChild(groupOptgroup);
+                }
+                
+                if (Object.keys(combinations).length > 0) {
+                    const comboOptgroup = document.createElement('optgroup');
+                    comboOptgroup.label = '🔗 組合';
+                    for (const comboName of Object.keys(combinations)) {
+                        const option = document.createElement('option');
+                        option.value = `combination:${comboName}`;
+                        option.textContent = comboName;
+                        comboOptgroup.appendChild(option);
+                    }
+                    groupSelect.appendChild(comboOptgroup);
+                }
+                
+                if (Object.keys(groups).length === 0 && Object.keys(combinations).length === 0) {
+                    const option = document.createElement('option');
+                    option.value = "";
+                    option.textContent = '暫無文件組/組合';
+                    option.disabled = true;
+                    groupSelect.appendChild(option);
+                }
+            };
+            
+            // 輔助函數：從組/組合獲取 patternsText 和 originalPatterns
+            const getGroupPatternsData = (name, type) => {
+                const storageData = this.settings.fileGroups || { groups: {}, combinations: {} };
+                const groups = storageData.groups || {};
+                const combinations = storageData.combinations || {};
+                let patternsArray = [];
+                let rangeTypeForDisplay = "";
+                
+                if (type === 'group') {
+                    const group = groups[name];
+                    if (!group || !group.patterns || group.patterns.length === 0) {
+                        new Notice(`文件組「${name}」為空`);
+                        return null;
+                    }
+                    patternsArray = group.patterns;
+                    rangeTypeForDisplay = "文件組";
+                } else if (type === 'combination') {
+                    const combo = combinations[name];
+                    if (!combo || !combo.groups || combo.groups.length === 0) {
+                        new Notice(`組合「${name}」為空`);
+                        return null;
+                    }
+                    for (const groupName of combo.groups) {
+                        const group = groups[groupName];
+                        if (group && group.patterns) {
+                            patternsArray = patternsArray.concat(group.patterns);
+                        }
+                    }
+                    if (patternsArray.length === 0) {
+                        new Notice(`組合「${name}」中的文件組都為空`);
+                        return null;
+                    }
+                    rangeTypeForDisplay = "組合";
+                } else {
+                    return null;
+                }
+                
+                return {
+                    patternsText: patternsArray.join('\n'),
+                    rangeType: rangeTypeForDisplay,
+                    originalPatterns: patternsArray.map(p => new RegExp(p))
+                };
+            };
+            
+            // 下拉框選擇變化
+            groupSelect.onchange = (e) => {
+                const value = groupSelect.value;
+                if (!value) return;
+                
+                const [type, name] = value.split(':');
+                if (name) {
+                    const data = getGroupPatternsData(name, type);
+                    if (data) {
+                        applyGroupOrCombinationToCustomRange(name, data.rangeType, data.patternsText, data.originalPatterns);
+                    }
+                }
+                // 重置為默認提示選項
+                groupSelect.value = '';
+            };
+            
+            // 初始化內容
+            updateGroupSelect();
+            
+            headerBtnContainer.appendChild(hintBtn);
+            headerBtnContainer.appendChild(groupSelect);
+            fileNameHeader.appendChild(headerBtnContainer);
+            modal.appendChild(fileNameHeader);
+
+            // 工具提示相關變量和函數
             let patternTooltip = null;
             let isMouseOnPatternTooltip = false;
             let isMouseOnHintBtn = false;
@@ -4929,7 +5075,7 @@ class CustomSearchPlugin extends Plugin {
     成實論\\.md
 
     # 路徑正則
-    ^agama\/[^\/]+\.md
+    ^agama\\/[^\\/]+\\.md
     ^kosa\\/ju\\/
     ^kosa\\/ju\\/俱舍.+\\.md
 
@@ -4940,9 +5086,9 @@ class CustomSearchPlugin extends Plugin {
     T44n1851_大乘義章\\d+\\.md
 
     # 排除規則（以 ! 開頭）
-    !.+疏22\.md
-    !^vibhasa\/others\/
-    !.*甘露味.*\.md</pre>
+    !.+疏22\\.md
+    !^vibhasa\\/others\\/
+    !.*甘露味.*\\.md</pre>
                 `;
 
                 patternTooltip.addEventListener('mouseenter', () => {
@@ -4957,7 +5103,7 @@ class CustomSearchPlugin extends Plugin {
                 document.body.appendChild(patternTooltip);
                 const rect = hintBtn.getBoundingClientRect();
                 patternTooltip.style.top = `${rect.bottom + 5}px`;
-                patternTooltip.style.left = `${rect.right - 400}px`;
+                patternTooltip.style.left = `${rect.right - 300}px`;
             };
             
             const startPatternHideTimer = () => {
@@ -4980,9 +5126,8 @@ class CustomSearchPlugin extends Plugin {
                 if (!isMouseOnPatternTooltip) startPatternHideTimer();
             };
             
-            fileNameHeader.appendChild(hintBtn);
             modal.appendChild(fileNameHeader);
-            
+
             const fileNameInputContainer = document.createElement('div');
             fileNameInputContainer.style.cssText = `margin-bottom: 20px;`;
             
@@ -5450,23 +5595,8 @@ class CustomSearchPlugin extends Plugin {
                         await updatePresetButtonAppearance();
                         return;
                     } else if (result.action === 'apply_to_custom') {
-                        if (!isExpanded) expandToMultiLine();
-                        multiLineTextarea.value = result.patternsText;
-                        autoResizeTextarea();
-                        // 保存原始信息，等用戶提交時判斷
-                        this.pendingRangeInfo = {
-                            name: result.rangeName,
-                            type: result.rangeType === '文件組' ? 'group' : 'combination',
-                            rangeType: result.rangeType,
-                            originalPatterns: result.originalPatterns
-                        };
-                        // 設置自定義範圍按鈕的 📌 狀態
-                        setTimeout(() => {
-                            if (typeof setCustomButtonState !== 'undefined') {
-                                setCustomButtonState(result.rangeName, result.rangeType, result.patternsText);
-                            }
-                        }, 0);
-                        new Notice('✅ 已將文件組填充到編輯區，可繼續微調');
+                        // 調用公共函數
+                        applyGroupOrCombinationToCustomRange(result.rangeName, result.rangeType, result.patternsText, result.originalPatterns);
                         return;
                     }
                 }
