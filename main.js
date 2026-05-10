@@ -952,6 +952,10 @@ class SearchResultView extends ItemView {
             return lineContent;
         }
 
+        // 獲取插件的字符寬度緩存
+        const compensatedSet = this.plugin.compensatedCharSet;
+        const zeroWidthSet = this.plugin.zeroWidthCharSet;
+
         // 輔助函數：判斷是否為全角字符
         const isFullwidth = (char) => {
             const code = char.charCodeAt(0);
@@ -960,59 +964,23 @@ class SearchResultView extends ItemView {
                    (code >= 0xff00 && code <= 0xffef) ||  // 全角 ASCII
                    (code >= 0x3000 && code <= 0x303f);     // 中日韓符號
         };
-        
-        // 輔助函數：判斷是否為小字符（需要折算小寬度）
-        const isTibetanSpecial = (char) => {
-            // ་ (U+0F0B) 藏文分詞符，། (U+0F0D) 藏文句尾符
-            const code = char.charCodeAt(0);
-            return code === 0x0F0B || code === 0x0F0D;
-        };
-        
-        // 輔助函數：判斷是否為零寬度疊加字符（零寬度，不折算）
-        const isTibetanCombining = (char) => {
-            const code = char.charCodeAt(0);
-            // 藏文疊加字符範圍：U+0F90 - U+0FBC（部分）
-            // 以及 U+0F71 - U+0F88（元音符號）
-            return (code >= 0x0F71 && code <= 0x0F88) ||  // 藏文元音符號
-                   (code >= 0x0F90 && code <= 0x0FBC) ||  // 藏文疊加字符
-                   code === 0x0F69 ||  // ྩ
-                   code === 0x0F6A ||  // ྪ
-                   code === 0x0F6B ||  // ྫ
-                   code === 0x0F6C ||  // ྫྷ
-                   code === 0x0F6D ||  // ྭ
-                   code === 0x0F6E ||  // ྮ
-                   code === 0x0F6F ||  // ྯ
-                   code === 0x0F70 ||  // ྰ
-                   code === 0x0F71 ||  // ྱ
-                   code === 0x0F72 ||  // ྲ
-                   code === 0x0F73 ||  // ླ
-                   code === 0x0F74 ||  // ྴ
-                   code === 0x0F75 ||  // ྵ
-                   code === 0x0F76 ||  // ྶ
-                   code === 0x0F77 ||  // ྷ
-                   code === 0x0F78 ||  // ྸ
-                   code === 0x0F79 ||  // ྐྵ
-                   code === 0x0F7A ||  // ྺ
-                   code === 0x0F7B ||  // ྻ
-                   code === 0x0F7C ||  // ྼ
-                   (code >= 0x0F8D && code <= 0x0F9F);    // 其他疊加範圍
-        };
-        
-        // 判斷是否為需要完全跳過的零寬度字符（不佔水平空間）
-        const isTibetanZeroWidth = (char) => {
-            return isTibetanCombining(char);
-        };
-        
+
+        // 輔助函數：判斷是否為窄字符（需要折算0.2單位）
+        const isCompensatedChar = (char) => compensatedSet.has(char.charCodeAt(0));
+
+        // 輔助函數：判斷是否為零寬度字符（完全跳過）
+        const isZeroWidthCombining = (char) => zeroWidthSet.has(char.charCodeAt(0));
+
         // 計算字符串的單位長度
-        // 參數: str - 字符串, skipZeroWidth - 是否跳過零寬度字符, skipSpecial - 是否跳過特殊字符
-        const getUnitLength = (str, skipZeroWidth = true, skipSpecial = true) => {
+        // 參數: str - 字符串, skipZeroWidth - 是否跳過零寬度字符, skipCompensated - 是否跳過窄字符
+        const getUnitLength = (str, skipZeroWidth = true, skipCompensated = true) => {
             let units = 0;
             for (const char of str) {
-                if (skipZeroWidth && isTibetanZeroWidth(char)) {
+                if (skipZeroWidth && isZeroWidthCombining(char)) {
                     continue;  // 跳過零寬度疊加字符
                 }
-                if (skipSpecial && isTibetanSpecial(char)) {
-                    continue;  // 跳過小字符（後續單獨折算）
+                if (skipCompensated && isCompensatedChar(char)) {
+                    continue;  // 跳過窄字符（後續單獨折算）
                 }
                 units += isFullwidth(char) ? 2 : 1;
             }
@@ -1025,12 +993,12 @@ class SearchResultView extends ItemView {
             let result = '';
             for (const char of str) {
                 // 零寬度疊加字符：直接保留，不計入長度
-                if (isTibetanZeroWidth(char)) {
+                if (isZeroWidthCombining(char)) {
                     result += char;
                     continue;
                 }
-                // 小字符：直接保留，不計入長度（後續折算）
-                if (isTibetanSpecial(char)) {
+                // 窄字符：直接保留，不計入長度（後續折算）
+                if (isCompensatedChar(char)) {
                     result += char;
                     continue;
                 }
@@ -1057,7 +1025,7 @@ class SearchResultView extends ItemView {
             if (match) {
                 keywordStart = match.index;
                 keywordEnd = keywordStart + match[0].length;
-                // 計算關鍵字單位長度時也需要跳過小字符
+                // 計算關鍵字單位長度時也需要跳過窄字符
                 keywordUnits = getUnitLength(match[0], true, true);
             }
             // 重置正則的 lastIndex
@@ -1080,18 +1048,18 @@ class SearchResultView extends ItemView {
             }
         }
         
-        // 計算整行的單位長度（跳過小字符）
+        // 計算整行的單位長度（跳過窄字符）
         const totalUnits = getUnitLength(lineContent, true, true);
         
         if (keywordStart === -1 || totalUnits <= availableUnits) {
             return lineContent;
         }
 
-        // 計算關鍵字前的單位數（跳過小字符）
+        // 計算關鍵字前的單位數（跳過窄字符）
         const beforeKeyword = lineContent.substring(0, keywordStart);
         const beforeUnits = getUnitLength(beforeKeyword, true, true);
         
-        // 計算關鍵字後的單位數（跳過小字符）
+        // 計算關鍵字後的單位數（跳過窄字符）
         const afterKeyword = lineContent.substring(keywordEnd);
         const afterUnits = getUnitLength(afterKeyword, true, true);
         
@@ -1110,18 +1078,18 @@ class SearchResultView extends ItemView {
             rightUnits = afterUnits;
         }
         
-        // 截取左邊（從 keywordStart 向左，跳過小字符）
+        // 截取左邊（從 keywordStart 向左，跳過窄字符）
         let leftPart = '';
         let units = 0;
         for (let i = keywordStart - 1; i >= 0; i--) {
             const char = lineContent[i];
             // 零寬度疊加字符：直接添加，不計入長度
-            if (isTibetanZeroWidth(char)) {
+            if (isZeroWidthCombining(char)) {
                 leftPart = char + leftPart;
                 continue;
             }
-            // 小字符：直接添加，不計入長度
-            if (isTibetanSpecial(char)) {
+            // 窄字符：直接添加，不計入長度
+            if (isCompensatedChar(char)) {
                 leftPart = char + leftPart;
                 continue;
             }
@@ -1131,18 +1099,18 @@ class SearchResultView extends ItemView {
             units += charUnits;
         }
         
-        // 截取右邊（從 keywordEnd 向右，跳過小字符）
+        // 截取右邊（從 keywordEnd 向右，跳過窄字符）
         let rightPart = '';
         units = 0;
         for (let i = keywordEnd; i < lineContent.length; i++) {
             const char = lineContent[i];
             // 零寬度疊加字符：直接添加，不計入長度
-            if (isTibetanZeroWidth(char)) {
+            if (isZeroWidthCombining(char)) {
                 rightPart += char;
                 continue;
             }
-            // 小字符：直接添加，不計入長度
-            if (isTibetanSpecial(char)) {
+            // 窄字符：直接添加，不計入長度
+            if (isCompensatedChar(char)) {
                 rightPart += char;
                 continue;
             }
@@ -1155,32 +1123,32 @@ class SearchResultView extends ItemView {
         // 構建截取結果
         let result = leftPart + lineContent.substring(keywordStart, keywordEnd) + rightPart;
         
-        // 統計結果中的小字符數量，折算實際寬度（疊加字符不折算寬度）
-        let tibetanSpecialCount = 0;
+        // 統計結果中的窄字符數量，折算實際寬度（疊加字符不折算寬度）
+        let compensatedCount = 0;
         for (const char of result) {
-            if (isTibetanSpecial(char)) {
-                tibetanSpecialCount++;
+            if (isCompensatedChar(char)) {
+                compensatedCount++;
             }
         }
-
-        // 每個分詞符/句尾符折算為 0.2 單位
-        const tibetanUnits = tibetanSpecialCount * 0.2;
-        if (tibetanUnits > 0) {
-            // 如果小字符佔用了額外空間，需要從兩端預留
-            // 從左右兩端各減去一半的小字符寬度
-            const halfTibetanUnits = Math.ceil(tibetanUnits / 2);
+        
+        // 每個窄字符折算為 0.2 單位
+        const compensatedUnits = compensatedCount * 0.2;
+        if (compensatedUnits > 0) {
+            // 如果窄字符佔用了額外空間，需要從兩端預留
+            // 從左右兩端各減去一半的窄字符寬度
+            const halfCompensatedUnits = Math.ceil(compensatedUnits / 2);
             
             // 重新截取左邊（減少 leftUnits 來預留空間）
-            let adjustedLeftUnits = Math.max(0, leftUnits - halfTibetanUnits);
+            let adjustedLeftUnits = Math.max(0, leftUnits - halfCompensatedUnits);
             leftPart = '';
             units = 0;
             for (let i = keywordStart - 1; i >= 0; i--) {
                 const char = lineContent[i];
-                if (isTibetanZeroWidth(char)) {
+                if (isZeroWidthCombining(char)) {
                     leftPart = char + leftPart;
                     continue;
                 }
-                if (isTibetanSpecial(char)) {
+                if (isCompensatedChar(char)) {
                     leftPart = char + leftPart;
                     continue;
                 }
@@ -1191,16 +1159,16 @@ class SearchResultView extends ItemView {
             }
             
             // 重新截取右邊（減少 rightUnits 來預留空間）
-            let adjustedRightUnits = Math.max(0, rightUnits - halfTibetanUnits);
+            let adjustedRightUnits = Math.max(0, rightUnits - halfCompensatedUnits);
             rightPart = '';
             units = 0;
             for (let i = keywordEnd; i < lineContent.length; i++) {
                 const char = lineContent[i];
-                if (isTibetanZeroWidth(char)) {
+                if (isZeroWidthCombining(char)) {
                     rightPart += char;
                     continue;
                 }
-                if (isTibetanSpecial(char)) {
+                if (isCompensatedChar(char)) {
                     rightPart += char;
                     continue;
                 }
@@ -3191,7 +3159,7 @@ class SearchResultView extends ItemView {
 
 // ==================== 插件設置 ====================
 const DEFAULT_SETTINGS = {
-    version: "2.1.1",  // 主版本.次版本.修訂版本。版本號，用於數據遷移
+    version: "2.2.0",  // 主版本.次版本.修訂版本。版本號，用於數據遷移
 
     enableBooleanQuery: false,  // 布爾查詢語法開關
     defaultDisplayMode: 'B', // 'A' 或 'B'
@@ -3271,6 +3239,28 @@ const DEFAULT_SETTINGS = {
             }
         ],
         currentIndex: -1  // 當前激活的歷史索引，-1表示不在歷史中（如新的主動搜索）
+    },
+    // 字符寬度設置（用於A模式截取）
+    charWidth: {
+        // 窄字符範圍（每個折算0.2單位）- 支持單個碼位或 "起始-結束"
+        compensatedRanges: [
+            "0x0F08",                    // ༈ 
+            "0x0F0B-0x0F0D",            // ་ ༌ ། 
+            "0x0F0F-0x0F11",            // ༏ ༐ ༑ 
+            "0x0FD2"                     // ࿒ 
+        ],
+        // 零寬度字符範圍（完全跳過）- 支持單個碼位或 "起始-結束"
+        zeroWidthRanges: [
+            "0x0F71-0x0F7E",            //  ཱ ི ཱི ུ ཱུ ྲྀ ཷ ླྀ ཹ ེ ཻ ོ ཽ ཾ藏文
+            "0x0F80-0x0F84",            //   ྀ ཱྀ ྂ ྃ ྄  藏文
+            "0x0F8D-0x0FBC",            //    ྍ ྎ ྏ  ྐ ྑ ྒ ྒྷ ྔ ྕ ྖ ྗ ྘ ྙ ྚ ྛ ྜ ྜྷ ྞ ྟ  ྠ ྡ ྡྷ ྣ ྤ ྥ ྦ ྦྷ ྨ ྩ ྪ ྫ ྫྷ ྭ ྮ ྯ ྰ ྱ ྲ ླ ྴ ྵ ྶ ྷ ྸ ྐྵ ྺ ྻ ྼ  藏文
+            "0x0900-0x0902",
+            "0x094D",                    //  ऀ ँ ं ्  
+            "0x0941-0x0948",             // ु ू ृ ॄ ॅ ॆ े ै 
+            "0x093A",
+            "0x093C",                    // ऺ ़  
+            "0x0962-0x0963"              // ॢ ॣ 
+        ]
     }
 };
 
@@ -3888,13 +3878,13 @@ class CustomSearchPlugin extends Plugin {
         const loadedData = await this.loadData();
         const oldVersion = loadedData?.version || "0.0.0";
         const currentVersion = DEFAULT_SETTINGS.version;
-        
+
         // 比較主版本和次版本（忽略修訂版本）
         const isMajorMinorMatch = this.isMajorMinorMatch(oldVersion, currentVersion);
         
         let backupPath = null;
         const configPath = `${this.app.vault.configDir}/plugins/custom-search/data.json`;
-        
+
         // 如果有配置且主/次版本不匹配，進行備份重置
         if (!isMajorMinorMatch && loadedData && Object.keys(loadedData).length > 0) {
             try {
@@ -3928,6 +3918,9 @@ class CustomSearchPlugin extends Plugin {
             this.settings = JSON.parse(JSON.stringify(DEFAULT_SETTINGS));
             await this.saveSettings();
         }
+
+        // 刷新字符寬度緩存
+        this.refreshCharWidthCache();
     }
 
     // 輔助函數：比較主版本和次版本是否相同
@@ -4036,6 +4029,31 @@ class CustomSearchPlugin extends Plugin {
         }
         
         new BackupModal(this.app, backupPath).open();
+    }
+
+    // 解析範圍字符串，返回 Set
+    parseRangesToSet(ranges) {
+        const set = new Set();
+        for (const range of ranges) {
+            if (range.includes('-')) {
+                const [startStr, endStr] = range.split('-');
+                const start = parseInt(startStr);
+                const end = parseInt(endStr);
+                for (let code = start; code <= end; code++) {
+                    set.add(code);
+                }
+            } else {
+                set.add(parseInt(range));
+            }
+        }
+        return set;
+    }
+
+    // 刷新字符寬度緩存（在加載設置或保存設置後調用）
+    refreshCharWidthCache() {
+        const charWidth = this.settings.charWidth || DEFAULT_SETTINGS.charWidth;
+        this.compensatedCharSet = this.parseRangesToSet(charWidth.compensatedRanges);
+        this.zeroWidthCharSet = this.parseRangesToSet(charWidth.zeroWidthRanges);
     }
 
     async saveSettings() {
@@ -6362,6 +6380,144 @@ class CustomSearchSettingTab extends PluginSettingTab {
             } else {
                 new Notice("請至少輸入一個有效的正則表達式");
             }
+        };
+
+        // ===== 字符寬度設置 =====
+        searchPanel.createEl("h3", { text: "字符寬度自定義設置", attr: { style: "margin-top: 20px; margin-bottom: 10px;" } });
+        searchPanel.createEl("p", { 
+            text: "用於單行模式（A模式）的字符寬度計算。（每行一個，支持單個碼位或 起始-結束）",
+            attr: { style: "font-size: 11px; color: var(--text-muted); margin-bottom: 10px;" } 
+        });
+        
+        // 確保 charWidth 對象存在
+        if (!this.plugin.settings.charWidth) {
+            this.plugin.settings.charWidth = JSON.parse(JSON.stringify(DEFAULT_SETTINGS.charWidth));
+        }
+
+        // 雙欄並排容器
+        const charsDoubleColumn = searchPanel.createEl("div", {
+            attr: { style: "display: flex; gap: 16px; margin-bottom: 16px;" }
+        });
+
+        // 左欄：窄字符範圍設置
+        const compensatedSection = charsDoubleColumn.createEl("div", {
+            attr: { style: "flex: 1; border: 1px solid var(--background-modifier-border); border-radius: 8px; padding: 12px;" }
+        });
+        compensatedSection.createEl("div", {
+            text: "📏 窄字符（每個字符折算0.2單位）",
+            attr: { style: "font-weight: 600; margin-bottom: 6px;" }
+        });
+        const compensatedTextarea = compensatedSection.createEl("textarea", {
+            attr: {
+                style: "width: 100%; min-height: 200px; font-family: monospace; font-size: 12px;",
+            }
+        });
+        compensatedTextarea.value = this.plugin.settings.charWidth.compensatedRanges.join('\n');
+
+        // 右欄：零寬度字符範圍設置
+        const zeroWidthSection = charsDoubleColumn.createEl("div", {
+            attr: { style: "flex: 1; border: 1px solid var(--background-modifier-border); border-radius: 8px; padding: 12px;" }
+        });
+        zeroWidthSection.createEl("div", {
+            text: "⬚ 零寬度字符（不計寬度）",
+            attr: { style: "font-weight: 600; margin-bottom: 6px;" }
+        });
+        const zeroWidthTextarea = zeroWidthSection.createEl("textarea", {
+            attr: {
+                style: "width: 100%; min-height: 200px; font-family: monospace; font-size: 12px;",
+            }
+        });
+        zeroWidthTextarea.value = this.plugin.settings.charWidth.zeroWidthRanges.join('\n');
+        
+        // 按鈕容器（並排）
+        const buttonContainer = searchPanel.createEl("div", {
+            attr: { style: "display: flex; gap: 8px; margin-top: 8px;" }
+        });
+        
+        // 保存字符設置按鈕
+        const saveCharsBtn = buttonContainer.createEl("button", {
+            text: "💾 保存字符設置",
+            attr: { style: "padding: 4px 12px; cursor: pointer;" }
+        });
+        
+        // 重置為默認字符設置按鈕
+        const resetCharsBtn = buttonContainer.createEl("button", {
+            text: "🔄 重置為默認字符設置",
+            attr: { style: "padding: 4px 12px; cursor: pointer;" }
+        });
+        
+        // 保存字符設置事件（同時保存窄字符和零寬度）
+        saveCharsBtn.onclick = async () => {
+            // 驗證並保存窄字符範圍
+            const compensatedLines = compensatedTextarea.value.split(/\r?\n/);
+            const validCompensatedRanges = [];
+            for (const line of compensatedLines) {
+                const trimmed = line.trim();
+                if (trimmed && !trimmed.startsWith('#')) {
+                    if (/^0x[0-9A-Fa-f]+(-0x[0-9A-Fa-f]+)?$/.test(trimmed)) {
+                        validCompensatedRanges.push(trimmed);
+                    } else {
+                        new Notice(`⚠️ 窄字符格式錯誤: ${trimmed}`);
+                        return;
+                    }
+                }
+            }
+            
+            // 驗證並保存零寬度範圍
+            const zeroWidthLines = zeroWidthTextarea.value.split(/\r?\n/);
+            const validZeroWidthRanges = [];
+            for (const line of zeroWidthLines) {
+                const trimmed = line.trim();
+                if (trimmed && !trimmed.startsWith('#')) {
+                    if (/^0x[0-9A-Fa-f]+(-0x[0-9A-Fa-f]+)?$/.test(trimmed)) {
+                        validZeroWidthRanges.push(trimmed);
+                    } else {
+                        new Notice(`⚠️ 零寬度格式錯誤: ${trimmed}`);
+                        return;
+                    }
+                }
+            }
+            
+            if (validCompensatedRanges.length === 0 && validZeroWidthRanges.length === 0) {
+                new Notice("請至少輸入一個有效的範圍");
+                return;
+            }
+            
+            this.plugin.settings.charWidth.compensatedRanges = validCompensatedRanges;
+            this.plugin.settings.charWidth.zeroWidthRanges = validZeroWidthRanges;
+            await this.plugin.saveSettings();
+            
+            // 刷新字符寬度緩存
+            this.plugin.refreshCharWidthCache();
+            
+            // 刷新已打開的搜索結果視圖
+            const view = this.app.workspace.getLeavesOfType(VIEW_TYPE_SEARCH_RESULT)[0]?.view;
+            if (view && view.currentResults.length > 0) {
+                view.refreshDisplay();
+            }
+            
+            new Notice(`已保存 ${validCompensatedRanges.length} 個窄字符範圍，${validZeroWidthRanges.length} 個零寬度範圍`);
+        };
+        
+        // 重置為默認字符設置事件
+        resetCharsBtn.onclick = async () => {
+            this.plugin.settings.charWidth = JSON.parse(JSON.stringify(DEFAULT_SETTINGS.charWidth));
+            await this.plugin.saveSettings();
+            
+            // 更新文本框顯示
+            compensatedTextarea.value = this.plugin.settings.charWidth.compensatedRanges.join('\n');
+            zeroWidthTextarea.value = this.plugin.settings.charWidth.zeroWidthRanges.join('\n');
+            
+            // 刷新字符寬度緩存
+            this.plugin.refreshCharWidthCache();
+            
+            // 刷新已打開的搜索結果視圖
+            const view = this.app.workspace.getLeavesOfType(VIEW_TYPE_SEARCH_RESULT)[0]?.view;
+            if (view && view.currentResults.length > 0) {
+                view.refreshDisplay();
+            }
+            
+            new Notice("已重置字符寬度設置為默認值");
         };
 
         // ==================== 選項卡2：優先級設置 ====================
