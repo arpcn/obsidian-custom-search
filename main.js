@@ -4921,12 +4921,12 @@ class CustomSearchPlugin extends Plugin {
             const hintBtn = document.createElement('button');
             hintBtn.textContent = '📋 查看示例';
             hintBtn.style.cssText = `background: transparent; border: none; color: var(--text-accent); cursor: pointer; font-size: 11px; padding: 2px 6px; border-radius: 4px;`;
-            
-            // 選已有組下拉框（始終可見）
+
+            // 選已有組
             const groupSelect = document.createElement('select');
             groupSelect.style.cssText = `background: transparent; border: 1px solid var(--background-modifier-border); border-radius: 4px; font-size: 11px; padding: 2px 8px; color: var(--text-muted); cursor: pointer;`;
             groupSelect.title = '從已有的文件組或組合中選擇';
-            
+
             // 更新下拉框內容的函數
             const updateGroupSelect = () => {
                 groupSelect.innerHTML = '<option value="">-- 選已有組 --</option>';
@@ -5035,15 +5035,16 @@ class CustomSearchPlugin extends Plugin {
             fileNameHeader.appendChild(headerBtnContainer);
             modal.appendChild(fileNameHeader);
 
-            // 工具提示相關變量和函數
+            // 查看示例 - 點擊觸發
             let patternTooltip = null;
-            let isMouseOnPatternTooltip = false;
-            let isMouseOnHintBtn = false;
-            let patternHideTimeout = null;
             
             const showPatternTooltip = () => {
-                if (patternHideTimeout) clearTimeout(patternHideTimeout);
-                if (patternTooltip) return;
+                // 如果已經存在，先移除
+                if (patternTooltip) {
+                    patternTooltip.remove();
+                    patternTooltip = null;
+                    return;
+                }
                 
                 patternTooltip = document.createElement('div');
                 patternTooltip.style.cssText = `
@@ -5064,67 +5065,55 @@ class CustomSearchPlugin extends Plugin {
                         <span style="font-size: 10px; color: var(--text-faint);">(可直接選中文字複製)</span>
                     </div>
                     <pre style="margin: 0; padding: 8px; background: var(--background-secondary); border-radius: 6px; font-family: monospace; font-size: 11px; white-space: pre-wrap; word-break: break-all; user-select: text; max-height: 100px; overflow-y: auto;">
-    # 純文件名正則
-    ^(集異門|法蘊|品類|識身)足論\\.md
-    (婆沙|正理|本義抄)\\d+-\\d+\\.md
-    (心論雜心|AKBh)\\d+\\.md
-    ^(甘露味論|入阿毘達磨論)\\.md
-    俱舍論記疏\\d+\\.md
-    俱舍所依阿含\\.md
-    陰持入經註?.md
-    成實論\\.md
+# 純文件名正則
+^(集異門|法蘊|品類|識身)足論\\.md
+(婆沙|正理|本義抄)\\d+-\\d+\\.md
+(心論雜心|AKBh)\\d+\\.md
+^(甘露味論|入阿毘達磨論)\\.md
+俱舍論記疏\\d+\\.md
+俱舍所依阿含\\.md
+陰持入經註?.md
+成實論\\.md
 
-    # 路徑正則
-    ^agama\\/[^\\/]+\\.md
-    ^kosa\\/ju\\/
-    ^kosa\\/ju\\/俱舍.+\\.md
+# 路徑正則
+^agama\\/[^\\/]+\\.md
+^kosa\\/ju\\/
+^kosa\\/ju\\/俱舍.+\\.md
 
-    # 藏經編號
-    T22n1428_四分律\\d+\\.md
-    T30n1579_瑜伽師地論\\d+\\.md
-    T25n1509_大智度論\\d+\\.md
-    T44n1851_大乘義章\\d+\\.md
+# 藏經編號
+T22n1428_四分律\\d+\\.md
+T30n1579_瑜伽師地論\\d+\\.md
+T25n1509_大智度論\\d+\\.md
+T44n1851_大乘義章\\d+\\.md
 
-    # 排除規則（以 ! 開頭）
-    !.+疏22\\.md
-    !^vibhasa\\/others\\/
-    !.*甘露味.*\\.md</pre>
-                `;
-
-                patternTooltip.addEventListener('mouseenter', () => {
-                    isMouseOnPatternTooltip = true;
-                    if (patternHideTimeout) clearTimeout(patternHideTimeout);
-                });
-                patternTooltip.addEventListener('mouseleave', () => {
-                    isMouseOnPatternTooltip = false;
-                    if (!isMouseOnHintBtn) startPatternHideTimer();
-                });
+# 排除規則（以 ! 開頭）
+!.+疏22\\.md
+!^vibhasa\\/others\\/
+!.*甘露味.*\\.md</pre>
+    `;
                 
                 document.body.appendChild(patternTooltip);
                 const rect = hintBtn.getBoundingClientRect();
                 patternTooltip.style.top = `${rect.bottom + 5}px`;
-                patternTooltip.style.left = `${rect.right - 300}px`;
+                patternTooltip.style.left = `${rect.right - 200}px`;
             };
             
-            const startPatternHideTimer = () => {
-                if (patternHideTimeout) clearTimeout(patternHideTimeout);
-                patternHideTimeout = setTimeout(() => {
-                    if (patternTooltip && !isMouseOnPatternTooltip && !isMouseOnHintBtn) {
-                        patternTooltip.remove();
-                        patternTooltip = null;
-                    }
-                }, 200);
+            // 點擊關閉彈窗（點擊其他地方）
+            const closePatternTooltipOnClickOutside = (e) => {
+                if (patternTooltip && !hintBtn.contains(e.target) && !patternTooltip.contains(e.target)) {
+                    patternTooltip.remove();
+                    patternTooltip = null;
+                }
             };
             
-            hintBtn.onmouseenter = () => {
-                isMouseOnHintBtn = true;
-                if (patternHideTimeout) clearTimeout(patternHideTimeout);
+            // 點擊按鈕切換彈窗
+            hintBtn.onclick = (e) => {
+                e.stopPropagation();
                 showPatternTooltip();
             };
-            hintBtn.onmouseleave = () => {
-                isMouseOnHintBtn = false;
-                if (!isMouseOnPatternTooltip) startPatternHideTimer();
-            };
+            
+            // 監聽點擊關閉
+            document.addEventListener('click', closePatternTooltipOnClickOutside);
             
             modal.appendChild(fileNameHeader);
 
