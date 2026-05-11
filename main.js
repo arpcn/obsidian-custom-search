@@ -17,7 +17,10 @@ function isRegexPattern(str) {
     return /[*+?${}[\]\\]/.test(str);
 }
 
-
+/**
+ * 將布爾表達式轉換為 Obsidian 原生搜索語法
+ * 注意：這個全局函數同時被 buildNativeSearchQuery 和類方法調用
+ */
 function convertBooleanToNative(query) {
     if (!query || !query.trim()) return query;
     
@@ -1482,12 +1485,69 @@ class SearchResultView extends ItemView {
             <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle></svg>
             <span>重新搜索</span>
         `;
-        
-        // 綁定重新搜索按鈕事件
+
+            // 綁定重新搜索按鈕事件
         reopenBtn.onclick = async () => {
             // 關閉可能打開的歷史面板
             this.closeHistoryPanel();
             
+            // 構建當前搜索的歷史條目對象（用於恢復對話框）
+            const currentHistoryItem = {
+                searchText: this.currentSearchText,
+                isRegex: this.isRegexContent,
+                isBooleanQuery: this.isBooleanQuery || false,
+                enableDiacriticIgnore: this.enableDiacriticIgnore || false,
+                rangeRef: this.currentRangeRef,
+                timestamp: Date.now()
+            };
+            
+            // 檢查主對話框是否存在
+            const existingDialog = this.plugin.currentModal;
+            const dialogExists = existingDialog && document.body.contains(existingDialog);
+            
+            if (dialogExists) {
+                // 對話框已存在：提取引用並更新內容
+                const dialogRefs = this.extractDialogRefs(existingDialog);
+                if (dialogRefs) {
+                    const success = await this.plugin.updateCurrentDialogWithHistory(currentHistoryItem, dialogRefs);
+                    if (success) {
+                        // 聚焦到對話框
+                        existingDialog.focus();
+                        new Notice("✅ 已載入當前搜索設置到對話框");
+                    } else {
+                        new Notice("⚠️ 更新對話框失敗，將打開新對話框");
+                        // 降級：打開新對話框
+                        const result = await this.plugin.showSearchModeDialog(
+                            this.currentSearchText,
+                            this.currentPatternsText,
+                            this.currentPatternsText.includes('\n'),
+                            this.currentRangeRef,
+                            this.isBooleanQuery || false,
+                            this.enableDiacriticIgnore || false
+                        );
+                        if (result) {
+                            await this.plugin.executeSearchFromDialogResult(result, { skipHistorySave: false });
+                        }
+                    }
+                } else {
+                    new Notice("⚠️ 無法獲取對話框引用，將打開新對話框");
+                    // 降級：打開新對話框
+                    const result = await this.plugin.showSearchModeDialog(
+                        this.currentSearchText,
+                        this.currentPatternsText,
+                        this.currentPatternsText.includes('\n'),
+                        this.currentRangeRef,
+                        this.isBooleanQuery || false,
+                        this.enableDiacriticIgnore || false
+                    );
+                    if (result) {
+                        await this.plugin.executeSearchFromDialogResult(result, { skipHistorySave: false });
+                    }
+                }
+                return;
+            }
+            
+            // 對話框不存在：打開新對話框並恢復狀態
             const searchTextToPass = this.currentSearchText;
             const patternsToPass = this.currentPatternsText;
             const isPresetToPass = this.currentIsPreset;
@@ -1503,56 +1563,20 @@ class SearchResultView extends ItemView {
                 prefillAsMultiLine = patternsToPass.includes('\n');
             }
             
-            // 調用插件的搜索面板方法，傳入當前的 rangeRef isBooleanQuery 用於恢復狀態
+            // 調用插件的搜索面板方法，傳入當前的 rangeRef、isBooleanQuery、enableDiacriticIgnore 用於恢復狀態
             const result = await this.plugin.showSearchModeDialog(
                 searchTextToPass,
                 previousFileNameToPass,
                 prefillAsMultiLine,
                 this.currentRangeRef,
-                this.isBooleanQuery,
-                this.enableDiacriticIgnore
+                this.isBooleanQuery || false,
+                this.enableDiacriticIgnore || false
             );
             
             if (!result) return;
-
+            
             // 根據用戶選擇執行搜索
-            if (result.type === 'preset_a') {
-                await this.plugin.searchAndShowInSidebar(
-                    result.searchText, 
-                    result.presetPatterns || this.plugin.filePatterns, 
-                    true, 
-                    result.rangeDisplay, 
-                    false, 
-                    result.rangeRef,
-                    result.isBooleanQuery || false,
-                    result.enableDiacriticIgnore || false
-                );
-            } else if (result.type === 'preset_b') {
-                this.plugin.executeNativeSearchWithPatterns(
-                    result.searchText, 
-                    result.presetPatterns || this.plugin.filePatterns, 
-                    true,
-                    result.isBooleanQuery || false
-                );
-            } else if (result.type === 'custom_a') {
-                await this.plugin.searchAndShowInSidebar(
-                    result.searchText, 
-                    result.fileName, 
-                    false, 
-                    result.rangeDisplay, 
-                    false, 
-                    result.rangeRef,
-                    result.isBooleanQuery || false,
-                    result.enableDiacriticIgnore || false
-                );
-            } else if (result.type === 'custom_b') {
-                this.plugin.executeNativeSearchWithPatterns(
-                    result.searchText, 
-                    result.fileName, 
-                    false,
-                    result.isBooleanQuery || false
-                );
-            }
+            await this.plugin.executeSearchFromDialogResult(result, { skipHistorySave: false });
         };
 
         // 分組顯示結果
@@ -2566,15 +2590,11 @@ class SearchResultView extends ItemView {
             keyboardFocusIndex = -1;
             updateAllRowStyles();
         };
-        
-        // 加載指定索引的歷史並恢復到對話框（不執行搜索）
+
+        // 加載指定索引的歷史並直接執行搜索
         const loadAndClose = async (index) => {
             if (index >= 0 && index < history.items.length) {
-                const item = history.items[index];
-                if (item) {
-                    // 恢復到對話框，而不是直接執行搜索
-                    await this.plugin.restoreHistoryToDialog(item);
-                }
+                await this.loadHistoryItem(index);
                 panel.remove();
             }
         };
@@ -2945,6 +2965,16 @@ class SearchResultView extends ItemView {
         if (panel) {
             panel.remove();
         }
+    }
+
+    /**
+     * 从现有对话框提取 DOM 元素引用
+     * @param {HTMLElement} modal - 对话框元素
+     * @returns {Object|null} dialogRefs 对象
+     */
+    extractDialogRefs(modal) {
+        if (!modal || !modal._dialogRefs) return null;
+        return modal._dialogRefs;
     }
 
     // 通過鍵盤快捷鍵顯示歷史列表（固定在左箭頭下方）
@@ -3678,15 +3708,7 @@ class HandwriteQueryModal extends Modal {
             const prefillAsMultiLine = this.previousFileName && this.previousFileName.includes('\n');
             const result = await this.plugin.showSearchModeDialog(this.previousSearchText, this.previousFileName, prefillAsMultiLine);
             if (result) {
-                if (result.type === 'preset_a') {
-                    await this.plugin.searchAndShowInSidebar(result.searchText, result.presetPatterns || this.plugin.filePatterns, true, result.rangeDisplay, false, result.rangeRef, result.isBooleanQuery || false);
-                } else if (result.type === 'preset_b') {
-                    this.plugin.executeNativeSearchWithPatterns(result.searchText, result.presetPatterns || this.plugin.filePatterns, true, result.isBooleanQuery || false);
-                } else if (result.type === 'custom_a') {
-                    await this.plugin.searchAndShowInSidebar(result.searchText, result.fileName, false, result.rangeDisplay, false, result.rangeRef, result.isBooleanQuery || false);
-                } else if (result.type === 'custom_b') {
-                    this.plugin.executeNativeSearchWithPatterns(result.searchText, result.fileName, false, result.isBooleanQuery || false);
-                }
+                await this.plugin.executeSearchFromDialogResult(result, { skipHistorySave: false });
             }
             this.resolveCallback(null);
         };
@@ -4043,6 +4065,56 @@ class CustomSearchPlugin extends Plugin {
 
     async saveSettings() {
         await this.saveData(this.settings);
+    }
+
+    // ==================== 公共搜索執行方法 ====================
+    /**
+     * 統一的搜索執行方法，用於替代重複的 result.type 判斷邏輯
+     * @param {Object} result - 對話框返回的結果對象
+     * @param {Object} options - 選項
+     * @param {boolean} options.skipHistorySave - 是否跳過保存到歷史
+     * @param {boolean} options.useEmptyPresetPatterns - preset_a 時是否使用空數組代替 patterns
+     * @returns {Promise<void>}
+     */
+    async executeSearchFromDialogResult(result, options = {}) {
+        if (!result) return;
+        
+        const { skipHistorySave = false, useEmptyPresetPatterns = false } = options;
+        
+        // 確定 patterns
+        let patterns;
+        if (result.type === 'preset_a' || result.type === 'preset_b') {
+            if (useEmptyPresetPatterns && result.type === 'preset_a') {
+                patterns = [];
+            } else {
+                patterns = result.presetPatterns || this.filePatterns;
+            }
+        } else {
+            patterns = result.fileName;
+        }
+        
+        const isPreset = result.type === 'preset_a' || result.type === 'preset_b';
+        const isSidebar = result.type === 'preset_a' || result.type === 'custom_a';
+        
+        if (isSidebar) {
+            await this.searchAndShowInSidebar(
+                result.searchText,
+                patterns,
+                isPreset,
+                result.rangeDisplay,
+                skipHistorySave,
+                result.rangeRef,
+                result.isBooleanQuery || false,
+                result.enableDiacriticIgnore || false
+            );
+        } else {
+            this.executeNativeSearchWithPatterns(
+                result.searchText,
+                patterns,
+                isPreset,
+                result.isBooleanQuery || false
+            );
+        }
     }
 
     showSuggesterModal(items) {
@@ -4540,32 +4612,6 @@ class CustomSearchPlugin extends Plugin {
         return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     }
 
-    /**
-     * 將布爾查詢表達式轉換為 Obsidian 原生搜索語法
-     * @param {string} query - 布爾查詢表達式
-     * @returns {string} Obsidian 原生搜索語法
-     */
-    convertBooleanToNative(query) {
-        if (!query || !query.trim()) return query;
-        
-        // 轉義處理
-        let result = query;
-        
-        // 替換空格為 AND（但要注意括號內的）
-        // 簡化處理：空格變為空格（原生語法中空格就是 AND）
-        // 替換 & 為空格
-        result = result.replace(/\s+&\s+|\s+&|&\s+/g, ' ');
-        result = result.replace(/&/g, ' ');
-        // 替換 | 為 OR
-        result = result.replace(/\s+\|\s+|\s+\||\|\s+/g, ' OR ');
-        result = result.replace(/\|/g, ' OR ');
-        // 替換 ! 為 -
-        result = result.replace(/!\s*/g, '-');
-        // 括號保留
-        
-        return result;
-    }
-
     // ==================== 文件組相關函數 ====================
     // 加載文件組數據（從 settings 中讀取）
     async loadCustomFileGroups() {
@@ -4798,43 +4844,7 @@ class CustomSearchPlugin extends Plugin {
         
         // 如果用戶在對話框中提交了搜索，則執行搜索
         if (result) {
-            if (result.type === 'preset_a') {
-                await this.searchAndShowInSidebar(
-                    result.searchText, 
-                    result.presetPatterns || this.filePatterns, 
-                    true, 
-                    result.rangeDisplay, 
-                    false, 
-                    result.rangeRef,
-                    result.isBooleanQuery || false,
-                    result.enableDiacriticIgnore || false
-                );
-            } else if (result.type === 'preset_b') {
-                this.executeNativeSearchWithPatterns(
-                    result.searchText, 
-                    result.presetPatterns || this.filePatterns, 
-                    true,
-                    result.isBooleanQuery || false
-                );
-            } else if (result.type === 'custom_a') {
-                await this.searchAndShowInSidebar(
-                    result.searchText, 
-                    result.fileName, 
-                    false, 
-                    result.rangeDisplay, 
-                    false, 
-                    result.rangeRef,
-                    result.isBooleanQuery || false,
-                    result.enableDiacriticIgnore || false
-                );
-            } else if (result.type === 'custom_b') {
-                this.executeNativeSearchWithPatterns(
-                    result.searchText, 
-                    result.fileName, 
-                    false,
-                    result.isBooleanQuery || false
-                );
-            }
+            await this.plugin.executeSearchFromDialogResult(result, { skipHistorySave: true });
         }
         
         return true;
@@ -4887,7 +4897,8 @@ class CustomSearchPlugin extends Plugin {
             updateButtonHighlight,
             getFileNamePatterns,
             customButtonState,
-            pendingRangeInfo
+            pendingRangeInfo,
+            state  // 添加這一行
         } = dialogRefs;
         
         // 1. 更新搜索內容
@@ -4905,9 +4916,8 @@ class CustomSearchPlugin extends Plugin {
             singleLineInput.value = '';
             multiLineTextarea.value = '';
             // 如果是展開狀態，收起來
-            if (isExpanded) {
-                // 注意：isExpanded 是局部變量，需要通過引用修改
-                dialogRefs.isExpandedValue = false;
+            if (dialogRefs.state && dialogRefs.state.isExpanded) {
+                dialogRefs.state.isExpanded = false;
                 multiLineTextarea.style.display = 'none';
                 singleLineInput.style.display = 'block';
             }
@@ -4972,9 +4982,14 @@ class CustomSearchPlugin extends Plugin {
             }
             
             if (originalPatternsText) {
-                // 展開編輯區並填充內容
-                if (!isExpanded && expandToMultiLine) {
-                    expandToMultiLine();
+                // 使用 DOM 直接判断编辑区是否已展开（不依赖闭包变量 isExpanded）
+                const isActuallyExpanded = multiLineTextarea.style.display === 'block';
+                if (!isActuallyExpanded) {
+                    // 手动展开编辑区（不复制单行输入框的值）
+                    singleLineInput.style.display = 'none';
+                    multiLineTextarea.style.display = 'block';
+                    if (autoResizeTextarea) autoResizeTextarea();
+                    multiLineTextarea.focus();
                 }
                 multiLineTextarea.value = originalPatternsText;
                 if (autoResizeTextarea) autoResizeTextarea();
@@ -5001,9 +5016,14 @@ class CustomSearchPlugin extends Plugin {
             // 完全自定義範圍
             const patternsText = rangeRef.patternsText;
             
-            // 展開編輯區並填充內容
-            if (!isExpanded && expandToMultiLine) {
-                expandToMultiLine();
+            // 使用 DOM 直接判断编辑区是否已展开（不依赖闭包变量 isExpanded）
+            const isActuallyExpanded = multiLineTextarea.style.display === 'block';
+            if (!isActuallyExpanded) {
+                // 手动展开编辑区（不复制单行输入框的值）
+                singleLineInput.style.display = 'none';
+                multiLineTextarea.style.display = 'block';
+                if (autoResizeTextarea) autoResizeTextarea();
+                multiLineTextarea.focus();
             }
             multiLineTextarea.value = patternsText;
             if (autoResizeTextarea) autoResizeTextarea();
@@ -5219,7 +5239,7 @@ class CustomSearchPlugin extends Plugin {
             const searchTextInput = document.createElement('input');
             searchTextInput.type = 'text';
             searchTextInput.value = selectedText;
-            searchTextInput.className = 'search-text-input';
+            searchTextInput.className = 'search-text-input';  // 添加這一行
             searchTextInput.style.cssText = `width: 100%; padding: 8px 10px; margin-bottom: 6px; border: 1px solid var(--background-modifier-border); border-radius: 6px;`;
             modal.appendChild(searchTextInput);
             
@@ -6345,6 +6365,27 @@ T44n1851_大乘義章\\d+\\.md
                 resolve(null);
             };
             
+            // 保存 dialogRefs 到 modal 对象上，供外部更新使用
+            modal._dialogRefs = {
+                searchTextInput: searchTextInput,
+                booleanQueryCheckbox: booleanQueryCheckbox,
+                diacriticIgnoreCheckbox: diacriticIgnoreCheckbox,
+                singleLineInput: singleLineInput,
+                multiLineTextarea: multiLineTextarea,
+                isExpanded: isExpanded,
+                expandToMultiLine: expandToMultiLine,
+                autoResizeTextarea: autoResizeTextarea,
+                clearCustomButtonState: clearCustomButtonState,
+                setCustomButtonState: setCustomButtonState,
+                updateButtonHighlight: updateButtonHighlight,
+                getFileNamePatterns: getFileNamePatterns,
+                customButtonState: customButtonState,
+                // 状态对象（用于传递可变状态）
+                state: {
+                    isExpanded: isExpanded
+                }
+            };
+
             searchTextInput.focus();
             searchTextInput.select();
         });
@@ -7179,15 +7220,7 @@ T44n1851_大乘義章\\d+\\.md
         const result = await this.showSearchModeDialog(selectedText);
         if (!result) return;
         
-        if (result.type === 'preset_a') {
-            await this.searchAndShowInSidebar(result.searchText, [], true, result.rangeDisplay, false, result.rangeRef, result.isBooleanQuery || false, result.enableDiacriticIgnore || false);
-        } else if (result.type === 'preset_b') {
-            this.executeNativeSearchWithPatterns(result.searchText, result.presetPatterns || this.filePatterns, true, result.isBooleanQuery || false);
-        } else if (result.type === 'custom_a') {
-            await this.searchAndShowInSidebar(result.searchText, result.fileName, false, result.rangeDisplay, false, result.rangeRef, result.isBooleanQuery || false, result.enableDiacriticIgnore || false);
-        } else if (result.type === 'custom_b') {
-            this.executeNativeSearchWithPatterns(result.searchText, result.fileName, false, result.isBooleanQuery || false);
-        }
+        await this.executeSearchFromDialogResult(result, { useEmptyPresetPatterns: true });
     }
     
     async quickPresetSearch(editor) {
@@ -8308,4 +8341,5 @@ class CustomSearchSettingTab extends PluginSettingTab {
 }
 
 module.exports = CustomSearchPlugin;
+
 
