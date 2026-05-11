@@ -5902,24 +5902,29 @@ T44n1851_大乘義章\\d+\\.md
                 singleLineInput.addEventListener('focus', expandToMultiLine);
             }
 
-            // 根據輸入框內容切換按鈕高亮
+            // 修改後：從 DOM 實時獲取展開狀態
             const updateButtonHighlight = () => {
-                const hasContent = isExpanded ? multiLineTextarea.value.trim() : singleLineInput.value.trim();
+                // 從 DOM 實時獲取當前編輯區是否展開，而不是依賴閉包變量
+                const isActuallyExpanded = multiLineTextarea.style.display === 'block';
+                const hasContent = isActuallyExpanded 
+                    ? multiLineTextarea.value.trim() 
+                    : singleLineInput.value.trim();
+                
                 if (hasContent) {
-                    // 輸入框有內容：自定義範圍按鈕高亮
+                    // 編輯區有內容 → 自定義範圍高亮
                     customLeft.style.borderColor = 'var(--interactive-accent)';
                     customRight.style.borderColor = 'var(--interactive-accent)';
                     presetLeft.style.borderColor = 'var(--background-modifier-border)';
                     presetRight.style.borderColor = 'var(--background-modifier-border)';
                 } else {
-                    // 輸入框為空：預設範圍按鈕高亮
+                    // 編輯區無內容 → 預定範圍高亮
                     customLeft.style.borderColor = 'var(--background-modifier-border)';
                     customRight.style.borderColor = 'var(--background-modifier-border)';
                     presetLeft.style.borderColor = 'var(--interactive-accent)';
                     presetRight.style.borderColor = 'var(--interactive-accent)';
                 }
             };
-            
+
             // 監聽輸入框變化
             singleLineInput.addEventListener('input', updateButtonHighlight);
             multiLineTextarea.addEventListener('input', updateButtonHighlight);
