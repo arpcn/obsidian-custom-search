@@ -2567,10 +2567,14 @@ class SearchResultView extends ItemView {
             updateAllRowStyles();
         };
         
-        // 加載指定索引的歷史並關閉面板
+        // 加載指定索引的歷史並恢復到對話框（不執行搜索）
         const loadAndClose = async (index) => {
             if (index >= 0 && index < history.items.length) {
-                await this.loadHistoryItem(index);
+                const item = history.items[index];
+                if (item) {
+                    // 恢復到對話框，而不是直接執行搜索
+                    await this.plugin.restoreHistoryToDialog(item);
+                }
                 panel.remove();
             }
         };
@@ -2914,28 +2918,7 @@ class SearchResultView extends ItemView {
 
     // 獲取歷史條目的顯示文本
     getHistoryDisplayText(item) {
-        const searchPreview = item.searchText.length > 35 
-            ? item.searchText.substring(0, 32) + "..." 
-            : item.searchText;
-        
-        const rangeRef = item.rangeRef;
-        let rangePreview = "";
-        
-        if (rangeRef.type === "default") {
-            rangePreview = "預設";
-        } else if (rangeRef.type === "group" && !rangeRef.patternsText) {
-            rangePreview = `組：${rangeRef.name}`;
-        } else if (rangeRef.type === "group" && rangeRef.patternsText) {
-            rangePreview = `組：${rangeRef.name}（改）`;
-        } else if (rangeRef.type === "combination" && !rangeRef.patternsText) {
-            rangePreview = `組合：${rangeRef.name}`;
-        } else if (rangeRef.type === "combination" && rangeRef.patternsText) {
-            rangePreview = `組合：${rangeRef.name}（改）`;
-        } else {
-            rangePreview = "自訂";
-        }
-        
-        return `${searchPreview} | ${rangePreview}`;
+        return this.plugin.getHistoryDisplayText(item);
     }
 
     // 刪除指定歷史條目
@@ -3819,6 +3802,17 @@ class CustomSearchPlugin extends Plugin {
         // 註冊右鍵菜單
         this.registerEvent(
             this.app.workspace.on('editor-menu', (menu, editor, info) => {
+                menu.addItem((item) => {
+                    item
+                        .setTitle("搜索面板")
+                        .setIcon("search")
+                        .onClick(async () => {
+                            // 獲取選中文本（可能為空）
+                            const selectedText = editor.getSelection().trim();
+                            await this.handleSearch(editor);
+                        });
+                });
+
                 const selectedText = editor.getSelection().trim();
                 if (selectedText) {
                     menu.addItem((item) => {
@@ -3829,17 +3823,6 @@ class CustomSearchPlugin extends Plugin {
                             .onClick(async () => {
                                 // 调用已有的快速预设搜索命令
                                 await this.quickPresetSearch(editor);
-                            });
-                    });
-                    
-                    menu.addItem((item) => {
-                        item
-                            .setSection("view")
-                            .setTitle("搜索面板")
-                            .setIcon("settings")
-                            .onClick(async () => {
-                                // 调用已有的搜索面板命令
-                                await this.handleSearch(editor);
                             });
                     });
                 }
@@ -4716,6 +4699,358 @@ class CustomSearchPlugin extends Plugin {
         this.executeNativeSearch(searchQuery);
     }
 
+    // 將歷史條目恢復到搜索對話框（不執行搜索）
+    async restoreHistoryToDialog(historyItem) {
+        if (!historyItem) return false;
+        
+        // 數據修正：確保字段完整
+        let needsSave = false;
+        if (historyItem.isBooleanQuery === undefined) {
+            historyItem.isBooleanQuery = false;
+            needsSave = true;
+        }
+        if (historyItem.isRegex === undefined) {
+            historyItem.isRegex = false;
+            needsSave = true;
+        }
+        if (historyItem.enableDiacriticIgnore === undefined) {
+            historyItem.enableDiacriticIgnore = false;
+            needsSave = true;
+        }
+        if (!historyItem.rangeRef) {
+            historyItem.rangeRef = { type: "default", name: null, patternsText: null };
+            needsSave = true;
+        }
+        
+        if (needsSave) {
+            await this.saveSettings();
+        }
+        
+        const searchText = historyItem.searchText;
+        const rangeRef = historyItem.rangeRef;
+        const isBooleanQuery = historyItem.isBooleanQuery || false;
+        const enableDiacriticIgnore = historyItem.enableDiacriticIgnore || false;
+        
+        // 根據 rangeRef 類型準備恢復參數
+        let patternsTextToRestore = "";
+        let prefillAsMultiLine = false;
+        let restoreRangeRef = rangeRef;
+        
+        if (rangeRef.type === "default") {
+            // 預設範圍：不需要 patterns 文本
+            patternsTextToRestore = "";
+            prefillAsMultiLine = false;
+        } else if (rangeRef.type === "group" && !rangeRef.patternsText) {
+            // 未修改的文件組：從 groups 中讀取
+            const groups = this.settings.fileGroups?.groups || {};
+            const group = groups[rangeRef.name];
+            if (group && group.patterns) {
+                patternsTextToRestore = group.patterns.join('\n');
+                prefillAsMultiLine = true;
+            } else {
+                new Notice(`文件組「${rangeRef.name}」不存在`);
+                return false;
+            }
+        } else if (rangeRef.type === "combination" && !rangeRef.patternsText) {
+            // 未修改的組合：從 combinations 中讀取
+            const groups = this.settings.fileGroups?.groups || {};
+            const combinations = this.settings.fileGroups?.combinations || {};
+            const combo = combinations[rangeRef.name];
+            if (combo && combo.groups) {
+                const allPatterns = [];
+                for (const groupName of combo.groups) {
+                    const group = groups[groupName];
+                    if (group && group.patterns) {
+                        allPatterns.push(...group.patterns);
+                    }
+                }
+                if (allPatterns.length > 0) {
+                    patternsTextToRestore = allPatterns.join('\n');
+                    prefillAsMultiLine = true;
+                } else {
+                    new Notice(`組合「${rangeRef.name}」無效`);
+                    return false;
+                }
+            } else {
+                new Notice(`組合「${rangeRef.name}」不存在`);
+                return false;
+            }
+        } else if (rangeRef.patternsText) {
+            // 修改版或自定義：直接使用 patternsText
+            patternsTextToRestore = rangeRef.patternsText;
+            prefillAsMultiLine = true;
+        } else {
+            patternsTextToRestore = "";
+            prefillAsMultiLine = false;
+        }
+        
+        // 打開對話框並恢復狀態
+        const result = await this.showSearchModeDialog(
+            searchText,
+            patternsTextToRestore,
+            prefillAsMultiLine,
+            restoreRangeRef,  // 傳入 rangeRef 用於恢復組/組合狀態
+            isBooleanQuery,
+            enableDiacriticIgnore
+        );
+        
+        // 如果用戶在對話框中提交了搜索，則執行搜索
+        if (result) {
+            if (result.type === 'preset_a') {
+                await this.searchAndShowInSidebar(
+                    result.searchText, 
+                    result.presetPatterns || this.filePatterns, 
+                    true, 
+                    result.rangeDisplay, 
+                    false, 
+                    result.rangeRef,
+                    result.isBooleanQuery || false,
+                    result.enableDiacriticIgnore || false
+                );
+            } else if (result.type === 'preset_b') {
+                this.executeNativeSearchWithPatterns(
+                    result.searchText, 
+                    result.presetPatterns || this.filePatterns, 
+                    true,
+                    result.isBooleanQuery || false
+                );
+            } else if (result.type === 'custom_a') {
+                await this.searchAndShowInSidebar(
+                    result.searchText, 
+                    result.fileName, 
+                    false, 
+                    result.rangeDisplay, 
+                    false, 
+                    result.rangeRef,
+                    result.isBooleanQuery || false,
+                    result.enableDiacriticIgnore || false
+                );
+            } else if (result.type === 'custom_b') {
+                this.executeNativeSearchWithPatterns(
+                    result.searchText, 
+                    result.fileName, 
+                    false,
+                    result.isBooleanQuery || false
+                );
+            }
+        }
+        
+        return true;
+    }
+
+    // 更新當前對話框的內容（不重建對話框）
+    async updateCurrentDialogWithHistory(historyItem, dialogRefs) {
+        if (!historyItem) return false;
+        
+        // 數據修正：確保字段完整
+        let needsSave = false;
+        if (historyItem.isBooleanQuery === undefined) {
+            historyItem.isBooleanQuery = false;
+            needsSave = true;
+        }
+        if (historyItem.isRegex === undefined) {
+            historyItem.isRegex = false;
+            needsSave = true;
+        }
+        if (historyItem.enableDiacriticIgnore === undefined) {
+            historyItem.enableDiacriticIgnore = false;
+            needsSave = true;
+        }
+        if (!historyItem.rangeRef) {
+            historyItem.rangeRef = { type: "default", name: null, patternsText: null };
+            needsSave = true;
+        }
+        
+        if (needsSave) {
+            await this.saveSettings();
+        }
+        
+        const searchText = historyItem.searchText;
+        const rangeRef = historyItem.rangeRef;
+        const isBooleanQuery = historyItem.isBooleanQuery || false;
+        const enableDiacriticIgnore = historyItem.enableDiacriticIgnore || false;
+        
+        // 解構對話框引用
+        const {
+            searchTextInput,
+            booleanQueryCheckbox,
+            diacriticIgnoreCheckbox,
+            singleLineInput,
+            multiLineTextarea,
+            isExpanded,
+            expandToMultiLine,
+            autoResizeTextarea,
+            clearCustomButtonState,
+            setCustomButtonState,
+            updateButtonHighlight,
+            getFileNamePatterns,
+            customButtonState,
+            pendingRangeInfo
+        } = dialogRefs;
+        
+        // 1. 更新搜索內容
+        searchTextInput.value = searchText;
+        
+        // 2. 更新布爾模式開關
+        booleanQueryCheckbox.checked = isBooleanQuery;
+        
+        // 3. 更新忽略變音開關
+        diacriticIgnoreCheckbox.checked = enableDiacriticIgnore;
+        
+        // 4. 根據 rangeRef 類型更新編輯區和自定義範圍狀態
+        if (rangeRef.type === "default") {
+            // 預設範圍：清空編輯區，收起多行模式，清除自定義範圍狀態
+            singleLineInput.value = '';
+            multiLineTextarea.value = '';
+            // 如果是展開狀態，收起來
+            if (isExpanded) {
+                // 注意：isExpanded 是局部變量，需要通過引用修改
+                dialogRefs.isExpandedValue = false;
+                multiLineTextarea.style.display = 'none';
+                singleLineInput.style.display = 'block';
+            }
+            // 清除自定義範圍按鈕的 📌 狀態
+            if (clearCustomButtonState) {
+                clearCustomButtonState();
+            }
+            // 更新按鈕高亮
+            if (updateButtonHighlight) {
+                updateButtonHighlight();
+            }
+            // 清除 pendingRangeInfo
+            this.pendingRangeInfo = null;
+        }
+        else if (rangeRef.type === "group" || rangeRef.type === "combination") {
+            // 文件組或組合：需要獲取 patterns 並填充編輯區
+            let patternsArray = [];
+            let rangeType = "";
+            let originalPatternsText = "";
+            
+            if (rangeRef.type === "group" && !rangeRef.patternsText) {
+                // 未修改的文件組：從 groups 中讀取
+                const groups = this.settings.fileGroups?.groups || {};
+                const group = groups[rangeRef.name];
+                if (group && group.patterns) {
+                    patternsArray = group.patterns;
+                    rangeType = "文件組";
+                    originalPatternsText = patternsArray.join('\n');
+                } else {
+                    new Notice(`文件組「${rangeRef.name}」不存在`);
+                    return false;
+                }
+            } else if (rangeRef.type === "combination" && !rangeRef.patternsText) {
+                // 未修改的組合：從 combinations 中讀取
+                const groups = this.settings.fileGroups?.groups || {};
+                const combinations = this.settings.fileGroups?.combinations || {};
+                const combo = combinations[rangeRef.name];
+                if (combo && combo.groups) {
+                    for (const groupName of combo.groups) {
+                        const group = groups[groupName];
+                        if (group && group.patterns) {
+                            patternsArray = patternsArray.concat(group.patterns);
+                        }
+                    }
+                    rangeType = "組合";
+                    originalPatternsText = patternsArray.join('\n');
+                } else {
+                    new Notice(`組合「${rangeRef.name}」不存在`);
+                    return false;
+                }
+            } else if (rangeRef.patternsText) {
+                // 修改版或自定義：直接使用 patternsText
+                originalPatternsText = rangeRef.patternsText;
+                patternsArray = parsePatternsToRegexArray(originalPatternsText);
+                if (rangeRef.type === "group") {
+                    rangeType = "文件組";
+                } else if (rangeRef.type === "combination") {
+                    rangeType = "組合";
+                } else {
+                    rangeType = "自訂";
+                }
+            }
+            
+            if (originalPatternsText) {
+                // 展開編輯區並填充內容
+                if (!isExpanded && expandToMultiLine) {
+                    expandToMultiLine();
+                }
+                multiLineTextarea.value = originalPatternsText;
+                if (autoResizeTextarea) autoResizeTextarea();
+                
+                // 保存原始信息
+                const originalPatterns = patternsArray.map(p => new RegExp(p));
+                this.pendingRangeInfo = {
+                    name: rangeRef.name,
+                    type: rangeRef.type,
+                    rangeType: rangeType,
+                    originalPatterns: originalPatterns
+                };
+                
+                // 設置自定義範圍按鈕的 📌 狀態
+                if (setCustomButtonState) {
+                    setCustomButtonState(rangeRef.name, rangeType, originalPatternsText);
+                }
+                
+                // 更新高亮狀態
+                if (updateButtonHighlight) updateButtonHighlight();
+            }
+        }
+        else if (rangeRef.patternsText) {
+            // 完全自定義範圍
+            const patternsText = rangeRef.patternsText;
+            
+            // 展開編輯區並填充內容
+            if (!isExpanded && expandToMultiLine) {
+                expandToMultiLine();
+            }
+            multiLineTextarea.value = patternsText;
+            if (autoResizeTextarea) autoResizeTextarea();
+            
+            // 清除 pendingRangeInfo（因為這是完全自定義，不是從組/組合來的）
+            this.pendingRangeInfo = null;
+            
+            // 清除自定義範圍按鈕的 📌 狀態（因為這是全新的自定義內容）
+            if (clearCustomButtonState) {
+                clearCustomButtonState();
+            }
+            
+            // 更新高亮狀態
+            if (updateButtonHighlight) updateButtonHighlight();
+        }
+        
+        // 聚焦到搜索輸入框
+        searchTextInput.focus();
+        searchTextInput.select();
+        
+        return true;
+    }
+
+    // 獲取歷史條目的顯示文本（公共方法）
+    getHistoryDisplayText(item) {
+        const searchPreview = item.searchText.length > 35 
+            ? item.searchText.substring(0, 32) + "..." 
+            : item.searchText;
+        
+        const rangeRef = item.rangeRef;
+        let rangePreview = "";
+        
+        if (rangeRef.type === "default") {
+            rangePreview = "預設";
+        } else if (rangeRef.type === "group" && !rangeRef.patternsText) {
+            rangePreview = `組：${rangeRef.name}`;
+        } else if (rangeRef.type === "group" && rangeRef.patternsText) {
+            rangePreview = `組：${rangeRef.name}（改）`;
+        } else if (rangeRef.type === "combination" && !rangeRef.patternsText) {
+            rangePreview = `組合：${rangeRef.name}`;
+        } else if (rangeRef.type === "combination" && rangeRef.patternsText) {
+            rangePreview = `組合：${rangeRef.name}（改）`;
+        } else {
+            rangePreview = "自訂";
+        }
+        
+        return `${searchPreview} | ${rangePreview}`;
+    }
+
     // ==================== 對話框函數 ====================
 
     async showSearchModeDialog(selectedText, previousFileName = '', prefillAsMultiLine = false, restoreRangeRef = null, initialBooleanQuery = null, initialDiacriticIgnore = false) {
@@ -4730,45 +5065,65 @@ class CustomSearchPlugin extends Plugin {
             }
             
             // 檢查是否有從歷史傳入的 restoreRangeRef（用於歷史打開時恢復 📌 狀態）
-            if (restoreRangeRef && (restoreRangeRef.type === 'group' || restoreRangeRef.type === 'combination')) {
-                // 從 restoreRangeRef 構建恢復信息
-                const groups = this.settings.fileGroups?.groups || {};
-                const combinations = this.settings.fileGroups?.combinations || {};
-                let patternsArray = [];
-                let rangeType = "";
-                let originalPatternsText = "";
-                
-                if (restoreRangeRef.type === 'group') {
-                    const group = groups[restoreRangeRef.name];
-                    if (group && group.patterns) {
-                        patternsArray = group.patterns;
-                        rangeType = "文件組";
-                        originalPatternsText = patternsArray.join('\n');
+            if (restoreRangeRef) {
+                // 處理 default 類型（預設範圍）
+                if (restoreRangeRef.type === 'default') {
+                    // 預設範圍：清空編輯區內容，收起多行模式，清除自定義範圍狀態
+                    this._restoreToDefaultRange = true;
+                    // 清除待處理的範圍信息
+                    this.pendingRangeInfo = null;
+                    // 清除自定義範圍的臨時恢復標記
+                    delete this._initialPendingRangeForRestore;
+                    delete this._restorePatternsText;
+                    // 保存布爾模式和忽略變音開關的狀態
+                    if (restoreRangeRef.isBooleanQuery !== undefined) {
+                        this._restoreBooleanQuery = restoreRangeRef.isBooleanQuery;
                     }
-                } else if (restoreRangeRef.type === 'combination') {
-                    const combo = combinations[restoreRangeRef.name];
-                    if (combo && combo.groups) {
-                        for (const groupName of combo.groups) {
-                            const group = groups[groupName];
-                            if (group && group.patterns) {
-                                patternsArray = patternsArray.concat(group.patterns);
-                            }
-                        }
-                        rangeType = "組合";
-                        originalPatternsText = patternsArray.join('\n');
+                    if (restoreRangeRef.enableDiacriticIgnore !== undefined) {
+                        this._restoreDiacriticIgnore = restoreRangeRef.enableDiacriticIgnore;
                     }
                 }
-                
-                if (patternsArray.length > 0) {
-                    // 保存恢復信息
-                    this._initialPendingRangeForRestore = {
-                        name: restoreRangeRef.name,
-                        type: restoreRangeRef.type,
-                        rangeType: rangeType,
-                        originalPatterns: patternsArray.map(p => new RegExp(p))
-                    };
-                    // 設置編輯區內容（稍後會在展開後使用）
-                    this._restorePatternsText = originalPatternsText;
+                // 處理 group 或 combination 類型
+                else if (restoreRangeRef.type === 'group' || restoreRangeRef.type === 'combination') {
+                    // 從 restoreRangeRef 構建恢復信息
+                    const groups = this.settings.fileGroups?.groups || {};
+                    const combinations = this.settings.fileGroups?.combinations || {};
+                    let patternsArray = [];
+                    let rangeType = "";
+                    let originalPatternsText = "";
+                    
+                    if (restoreRangeRef.type === 'group') {
+                        const group = groups[restoreRangeRef.name];
+                        if (group && group.patterns) {
+                            patternsArray = group.patterns;
+                            rangeType = "文件組";
+                            originalPatternsText = patternsArray.join('\n');
+                        }
+                    } else if (restoreRangeRef.type === 'combination') {
+                        const combo = combinations[restoreRangeRef.name];
+                        if (combo && combo.groups) {
+                            for (const groupName of combo.groups) {
+                                const group = groups[groupName];
+                                if (group && group.patterns) {
+                                    patternsArray = patternsArray.concat(group.patterns);
+                                }
+                            }
+                            rangeType = "組合";
+                            originalPatternsText = patternsArray.join('\n');
+                        }
+                    }
+                    
+                    if (patternsArray.length > 0) {
+                        // 保存恢復信息
+                        this._initialPendingRangeForRestore = {
+                            name: restoreRangeRef.name,
+                            type: restoreRangeRef.type,
+                            rangeType: rangeType,
+                            originalPatterns: patternsArray.map(p => new RegExp(p))
+                        };
+                        // 設置編輯區內容（稍後會在展開後使用）
+                        this._restorePatternsText = originalPatternsText;
+                    }
                 }
             }
             const modal = document.createElement('div');
@@ -4842,6 +5197,289 @@ class CustomSearchPlugin extends Plugin {
             searchTextInput.style.cssText = `width: 100%; padding: 8px 10px; margin-bottom: 6px; border: 1px solid var(--background-modifier-border); border-radius: 6px;`;
             modal.appendChild(searchTextInput);
             
+            // ========== 歷史下拉面板 ==========
+            let historyDropdown = null;
+            let currentHighlightIndex = -1;
+            
+            // 關閉下拉面板的函數
+            const closeHistoryDropdown = () => {
+                if (historyDropdown) {
+                    historyDropdown.remove();
+                    historyDropdown = null;
+                    currentHighlightIndex = -1;
+                }
+            };
+            
+            // 創建歷史下拉面板
+            const createHistoryDropdown = () => {
+                const history = this.settings.searchHistory;
+                if (!history || !history.items || history.items.length === 0) {
+                    return null;
+                }
+                
+                const dropdown = document.createElement('div');
+                dropdown.className = 'custom-search-history-dropdown';
+                dropdown.style.cssText = `
+                    position: absolute;
+                    z-index: 10001;
+                    background: rgba(var(--background-primary-rgb), 0.95);
+                    backdrop-filter: blur(8px);
+                    border: 1px solid var(--background-modifier-border);
+                    border-radius: 8px;
+                    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+                    max-height: 200px;
+                    overflow-y: auto;
+                    width: ${searchTextInput.offsetWidth}px;
+                    min-width: 300px;
+                `;
+                
+                // 計算位置
+                const rect = searchTextInput.getBoundingClientRect();
+                const modalRect = modal.getBoundingClientRect();
+                dropdown.style.top = `${rect.bottom + 4}px`;
+                dropdown.style.left = `${rect.left}px`;
+                dropdown.style.width = `${rect.width}px`;
+                
+                // 渲染歷史列表項
+                const items = history.items;
+                for (let i = 0; i < items.length; i++) {
+                    const item = items[i];
+                    const row = dropdown.createEl('div', {
+                        attr: {
+                            style: `
+                                display: flex;
+                                align-items: center;
+                                justify-content: space-between;
+                                padding: 8px 12px;
+                                cursor: pointer;
+                                border-bottom: 1px solid var(--background-modifier-border);
+                                transition: background 0.15s;
+                            `
+                        }
+                    });
+                    
+                    // 獲取顯示文本
+                    const displayText = this.getHistoryDisplayText(item);
+                    const textSpan = row.createEl('span', {
+                        text: displayText,
+                        attr: {
+                            style: `
+                                flex: 1;
+                                font-size: 12px;
+                                font-family: monospace;
+                                overflow: hidden;
+                                text-overflow: ellipsis;
+                                white-space: nowrap;
+                                color: var(--text-normal);
+                            `,
+                            title: displayText
+                        }
+                    });
+                    
+                    // 鼠標懸停效果
+                    row.onmouseenter = () => {
+                        if (currentHighlightIndex !== i) {
+                            if (dropdown.querySelector('.dropdown-highlight')) {
+                                const prev = dropdown.querySelector('.dropdown-highlight');
+                                prev.style.backgroundColor = '';
+                                prev.classList.remove('dropdown-highlight');
+                            }
+                            row.style.backgroundColor = 'var(--background-modifier-hover)';
+                            currentHighlightIndex = i;
+                        }
+                    };
+                    
+                    row.onmouseleave = () => {
+                        if (currentHighlightIndex === i) {
+                            row.style.backgroundColor = '';
+                            currentHighlightIndex = -1;
+                        }
+                    };
+                    
+                    // 點擊選擇歷史項
+                    row.onclick = async () => {
+                        const selectedItem = items[i];
+                        if (selectedItem) {
+                            closeHistoryDropdown();
+                            // 直接更新當前對話框，不重建
+                            await this.updateCurrentDialogWithHistory(selectedItem, {
+                                searchTextInput,
+                                booleanQueryCheckbox,
+                                diacriticIgnoreCheckbox,
+                                singleLineInput,
+                                multiLineTextarea,
+                                isExpanded,
+                                expandToMultiLine,
+                                autoResizeTextarea,
+                                clearCustomButtonState,
+                                setCustomButtonState,
+                                updateButtonHighlight,
+                                getFileNamePatterns,
+                                customButtonState,
+                                pendingRangeInfo: this.pendingRangeInfo
+                            });
+                        }
+                    };
+                    
+                    dropdown.appendChild(row);
+                }
+                
+                return dropdown;
+            };
+
+            // 顯示歷史下拉
+            const showHistoryDropdown = () => {
+                // 如果已經存在下拉面板，不重複創建
+                if (historyDropdown) return;
+                if (searchTextInput.value.trim() !== '') {
+                    return; // 輸入框有內容時不顯示下拉
+                }
+                historyDropdown = createHistoryDropdown();
+                if (historyDropdown) {
+                    document.body.appendChild(historyDropdown);
+                    // 添加鍵盤導航支持
+                    setupDropdownKeyboard();
+                }
+            };
+
+            // 鍵盤導航
+            const setupDropdownKeyboard = () => {
+                if (!historyDropdown) return;
+                
+                const items = historyDropdown.querySelectorAll('div[style*="cursor: pointer"]');
+                if (items.length === 0) return;
+                
+                const updateHighlight = (index) => {
+                    items.forEach((item, i) => {
+                        if (i === index) {
+                            item.style.backgroundColor = 'var(--background-modifier-hover)';
+                            currentHighlightIndex = index;
+                            // 滾動到可視區域
+                            item.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+                        } else {
+                            item.style.backgroundColor = '';
+                        }
+                    });
+                };
+                
+                const keydownHandler = async (e) => {
+                    if (!historyDropdown) {
+                        document.removeEventListener('keydown', keydownHandler);
+                        return;
+                    }
+                    
+                    if (e.key === 'ArrowDown') {
+                        e.preventDefault();
+                        if (currentHighlightIndex < items.length - 1) {
+                            updateHighlight(currentHighlightIndex + 1);
+                        } else if (currentHighlightIndex === -1 && items.length > 0) {
+                            updateHighlight(0);
+                        }
+                    } else if (e.key === 'ArrowUp') {
+                        e.preventDefault();
+                        if (currentHighlightIndex > 0) {
+                            updateHighlight(currentHighlightIndex - 1);
+                        } else if (currentHighlightIndex === -1 && items.length > 0) {
+                            updateHighlight(items.length - 1);
+                        }
+                    } else if (e.key === 'Enter') {
+                        e.preventDefault();
+                        if (currentHighlightIndex >= 0 && currentHighlightIndex < items.length) {
+                            const selectedItem = history.items[currentHighlightIndex];
+                            if (selectedItem) {
+                                closeHistoryDropdown();
+                                document.removeEventListener('keydown', keydownHandler);
+                                // 直接更新當前對話框，不重建
+                                await this.updateCurrentDialogWithHistory(selectedItem, {
+                                    searchTextInput,
+                                    booleanQueryCheckbox,
+                                    diacriticIgnoreCheckbox,
+                                    singleLineInput,
+                                    multiLineTextarea,
+                                    isExpanded,
+                                    expandToMultiLine,
+                                    autoResizeTextarea,
+                                    clearCustomButtonState,
+                                    setCustomButtonState,
+                                    updateButtonHighlight,
+                                    getFileNamePatterns,
+                                    customButtonState,
+                                    pendingRangeInfo: this.pendingRangeInfo
+                                });
+                            }
+                        }
+                    } else if (e.key === 'Escape') {
+                        e.preventDefault();
+                        closeHistoryDropdown();
+                        document.removeEventListener('keydown', keydownHandler);
+                        searchTextInput.focus();
+                    } else {
+                        // 輸入字符時關閉下拉
+                        closeHistoryDropdown();
+                        document.removeEventListener('keydown', keydownHandler);
+                    }
+                };
+                
+                document.addEventListener('keydown', keydownHandler);
+                // 保存處理器以便清理
+                historyDropdown._keydownHandler = keydownHandler;
+            };
+            
+            // 聚焦時：如果輸入框為空，顯示歷史下拉
+            searchTextInput.addEventListener('focus', () => {
+                if (searchTextInput.value.trim() === '') {
+                    showHistoryDropdown();
+                }
+                // 添加外部點擊關閉監聽
+                document.addEventListener('mousedown', closeOnClickOutside);
+            });
+            
+            // 點擊輸入框時：如果輸入框為空，顯示歷史下拉（處理已聚焦但下拉被關閉後重新點擊的情況）
+            searchTextInput.addEventListener('click', (e) => {
+                e.stopPropagation();
+                if (searchTextInput.value.trim() === '') {
+                    showHistoryDropdown();
+                }
+            });
+            
+            // 輸入時：清空時顯示下拉，有內容時關閉下拉
+            searchTextInput.addEventListener('input', () => {
+                if (searchTextInput.value.trim() === '') {
+                    showHistoryDropdown();
+                } else {
+                    closeHistoryDropdown();
+                }
+            });
+            
+            // 失去焦點時：延遲關閉下拉，給用戶時間點擊下拉項
+            searchTextInput.addEventListener('blur', () => {
+                setTimeout(() => {
+                    if (historyDropdown) {
+                        // 檢查鼠標是否在下拉面板上
+                        const hoveredElement = document.querySelector(':hover');
+                        if (!historyDropdown.contains(hoveredElement)) {
+                            closeHistoryDropdown();
+                        }
+                    }
+                    document.removeEventListener('mousedown', closeOnClickOutside);
+                }, 200);
+            });
+            
+            // 點擊其他地方關閉下拉（備用方案）
+            const closeOnClickOutside = (e) => {
+                if (historyDropdown && !historyDropdown.contains(e.target) && e.target !== searchTextInput) {
+                    closeHistoryDropdown();
+                    document.removeEventListener('mousedown', closeOnClickOutside);
+                }
+            };
+            
+            // 對話框關閉時清理下拉
+            const originalModalRemove = modal.remove.bind(modal);
+            modal.remove = () => {
+                closeHistoryDropdown();
+                originalModalRemove();
+            };
+            
             // 布爾查詢開關
             const booleanQueryRow = document.createElement('div');
             booleanQueryRow.style.cssText = `display: flex; align-items: center; gap: 1px; margin-bottom: 16px;`;
@@ -4868,6 +5506,15 @@ class CustomSearchPlugin extends Plugin {
             diacriticIgnoreCheckbox.type = 'checkbox';
             diacriticIgnoreCheckbox.id = 'diacritic-ignore-checkbox';
             diacriticIgnoreCheckbox.checked = initialDiacriticIgnore;
+            // 從歷史恢復布爾模式和忽略變音開關（優先級高於 initialBooleanQuery）
+            if (this._restoreBooleanQuery !== undefined) {
+                booleanQueryCheckbox.checked = this._restoreBooleanQuery;
+                delete this._restoreBooleanQuery;
+            }
+            if (this._restoreDiacriticIgnore !== undefined) {
+                diacriticIgnoreCheckbox.checked = this._restoreDiacriticIgnore;
+                delete this._restoreDiacriticIgnore;
+            }
             diacriticIgnoreCheckbox.style.cssText = `width: 10px; height: 10px; cursor: pointer; margin-left: 12px; margin-bottom: 3px;`;
             const diacriticIgnoreLabel = document.createElement('label');
             diacriticIgnoreLabel.htmlFor = 'diacritic-ignore-checkbox';
@@ -5186,6 +5833,20 @@ T44n1851_大乘義章\\d+\\.md
                 }, 0);
                 // 清除臨時存儲
                 delete this._restorePatternsText;
+            }
+            // 如果是從歷史恢復預設範圍（需要清空編輯區並收起）
+            else if (this._restoreToDefaultRange) {
+                // 清空編輯區
+                singleLineInput.value = '';
+                multiLineTextarea.value = '';
+                // 如果是展開狀態，收起來
+                if (isExpanded) {
+                    isExpanded = false;
+                    multiLineTextarea.style.display = 'none';
+                    singleLineInput.style.display = 'block';
+                }
+                // 清除預設範圍恢復標記
+                delete this._restoreToDefaultRange;
             }
             else {
                 singleLineInput.addEventListener('focus', expandToMultiLine);
@@ -6480,8 +7141,10 @@ T44n1851_大乘義章\\d+\\.md
     
     async handleSearch(editor) {
         const selectedText = editor.getSelection().trim();
-        if (!selectedText) { new Notice("請先選中要搜索的文本"); return; }
-        await navigator.clipboard.writeText(selectedText);
+        // 如果有選中文本，複製到剪貼板（方便用戶粘貼）
+        if (selectedText) {
+            await navigator.clipboard.writeText(selectedText);
+        }
         
         const result = await this.showSearchModeDialog(selectedText);
         if (!result) return;
