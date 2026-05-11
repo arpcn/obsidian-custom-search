@@ -3755,6 +3755,7 @@ class HandwriteQueryModal extends Modal {
 class CustomSearchPlugin extends Plugin {
     async onload() {
         console.log("載入custom-search插件");
+        this.currentModal = null; 
 
         await this.loadSettings();
 
@@ -3804,6 +3805,7 @@ class CustomSearchPlugin extends Plugin {
             this.app.workspace.on('editor-menu', (menu, editor, info) => {
                 menu.addItem((item) => {
                     item
+                        .setSection("view")
                         .setTitle("搜索面板")
                         .setIcon("search")
                         .onClick(async () => {
@@ -5056,6 +5058,26 @@ class CustomSearchPlugin extends Plugin {
     async showSearchModeDialog(selectedText, previousFileName = '', prefillAsMultiLine = false, restoreRangeRef = null, initialBooleanQuery = null, initialDiacriticIgnore = false) {
         const filePatterns = this.filePatterns;
         
+        // 如果已經存在對話框，更新內容並聚焦，不創建新對話框
+        if (this.currentModal && document.body.contains(this.currentModal)) {
+            // 聚焦到現有對話框
+            this.currentModal.focus();
+            
+            // 更新搜索輸入框（如果有選中文本）
+            if (selectedText) {
+                const searchInput = this.currentModal.querySelector('.search-text-input');
+                if (searchInput) {
+                    searchInput.value = selectedText;
+                    searchInput.focus();
+                    searchInput.select();
+                }
+            }
+            
+            // 返回一個永遠不 resolve 的 Promise，讓用戶繼續使用現有對話框
+            // 這樣不會觸發後續的搜索邏輯
+            return new Promise(() => {});
+        }
+        
         return new Promise((resolve) => {
             // 檢查是否有從外部傳入的 pendingRangeInfo（用於歷史重新搜索時恢復狀態）
             const initialPendingRange = this.pendingRangeInfo;
@@ -5141,6 +5163,9 @@ class CustomSearchPlugin extends Plugin {
                 max-width: 90vw;
                 border: 1px solid var(--background-modifier-border);
             `;
+            
+            // 保存當前對話框引用
+            this.currentModal = modal;
 
             const titleContainer = document.createElement('div');
             titleContainer.style.cssText = `position: relative; text-align: center; margin-bottom: 20px;`;
@@ -5194,6 +5219,7 @@ class CustomSearchPlugin extends Plugin {
             const searchTextInput = document.createElement('input');
             searchTextInput.type = 'text';
             searchTextInput.value = selectedText;
+            searchTextInput.className = 'search-text-input';
             searchTextInput.style.cssText = `width: 100%; padding: 8px 10px; margin-bottom: 6px; border: 1px solid var(--background-modifier-border); border-radius: 6px;`;
             modal.appendChild(searchTextInput);
             
@@ -5478,6 +5504,10 @@ class CustomSearchPlugin extends Plugin {
             modal.remove = () => {
                 closeHistoryDropdown();
                 originalModalRemove();
+                // 清除全局對話框引用
+                if (this.currentModal === modal) {
+                    this.currentModal = null;
+                }
             };
             
             // 布爾查詢開關
