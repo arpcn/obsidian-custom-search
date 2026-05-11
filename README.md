@@ -36,7 +36,7 @@
 | ⌨️ 快捷操作  | 鍵盤導航、右鍵菜單集成、長按歷史菜單               |
 
 
-![custom-search](https://github.com/arpcn/obsidian-custom-search/blob/main/media/custom-search.png)
+<img src="./media/custom-search.png" style="width:550px;">
 
 ---
 
