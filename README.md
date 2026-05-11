@@ -35,6 +35,9 @@
 | ✍️ 手寫查詢  | Obsidian 搜索語法支持、輔助編輯器、表單可視化      |
 | ⌨️ 快捷操作  | 鍵盤導航、右鍵菜單集成、長按歷史菜單               |
 
+
+![custom-search](https://github.com/arpcn/obsidian-custom-search/blob/main/media/custom-search.png)
+
 ---
 
 ## 🚀 快速開始
