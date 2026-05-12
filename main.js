@@ -4909,18 +4909,24 @@ class CustomSearchPlugin extends Plugin {
         
         // 3. 更新忽略變音開關
         diacriticIgnoreCheckbox.checked = enableDiacriticIgnore;
-        
+
         // 4. 根據 rangeRef 類型更新編輯區和自定義範圍狀態
         if (rangeRef.type === "default") {
             // 預設範圍：清空編輯區，收起多行模式，清除自定義範圍狀態
             singleLineInput.value = '';
             multiLineTextarea.value = '';
-            // 如果是展開狀態，收起來
-            if (dialogRefs.state && dialogRefs.state.isExpanded) {
-                dialogRefs.state.isExpanded = false;
+            
+            // 從 DOM 實時判斷是否需要收起（而不是依賴 state 對象）
+            const isActuallyExpanded = multiLineTextarea.style.display === 'block';
+            if (isActuallyExpanded) {
                 multiLineTextarea.style.display = 'none';
                 singleLineInput.style.display = 'block';
+                // 同步更新 state 對象（如果存在）
+                if (dialogRefs.state) {
+                    dialogRefs.state.isExpanded = false;
+                }
             }
+            
             // 清除自定義範圍按鈕的 📌 狀態
             if (clearCustomButtonState) {
                 clearCustomButtonState();
@@ -5845,10 +5851,11 @@ T44n1851_大乘義章\\d+\\.md
                 multiLineTextarea.style.height = 'auto';
                 multiLineTextarea.style.height = Math.min(multiLineTextarea.scrollHeight, 300) + 'px';
             };
-            
+
             const expandToMultiLine = () => {
-                if (isExpanded) return;
-                isExpanded = true;
+                // 檢查是否已展開
+                if (multiLineTextarea.style.display === 'block') return;
+                
                 multiLineTextarea.value = singleLineInput.value;
                 singleLineInput.style.display = 'none';
                 multiLineTextarea.style.display = 'block';
@@ -5856,8 +5863,11 @@ T44n1851_大乘義章\\d+\\.md
                 multiLineTextarea.focus();
                 const len = multiLineTextarea.value.length;
                 multiLineTextarea.setSelectionRange(len, len);
+                
+                // 可以保留閉包變量用於其他用途，但核心邏輯依賴 DOM
+                isExpanded = true;  // 可選，但不影響 getFileNamePatterns
             };
-            
+
             // 如果是多行模式（來自重新搜索的自定義範圍），直接展開並顯示多行
             if (prefillAsMultiLine && previousFileName && previousFileName.includes('\n')) {
                 isExpanded = true;
@@ -5983,9 +5993,12 @@ T44n1851_大乘義章\\d+\\.md
                     setupTextareaWatcher();
                 }
             }, 0);
-            
-            const getFileNamePatterns = () => isExpanded ? multiLineTextarea.value : singleLineInput.value;
-            
+
+            const getFileNamePatterns = () => {
+                const isActuallyExpanded = multiLineTextarea.style.display === 'block';
+                return isActuallyExpanded ? multiLineTextarea.value : singleLineInput.value;
+            };
+
             const createLeftButton = (title, subtitle, description) => {
                 const btn = document.createElement('button');
                 btn.style.cssText = `display: flex; align-items: center; padding: 5px 15px; background: var(--background-secondary); border: 1px solid var(--background-modifier-border); border-radius: 8px; cursor: pointer; width: 100%; min-height: 70px;`;
@@ -8346,5 +8359,4 @@ class CustomSearchSettingTab extends PluginSettingTab {
 }
 
 module.exports = CustomSearchPlugin;
-
 
