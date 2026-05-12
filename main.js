@@ -4916,15 +4916,11 @@ class CustomSearchPlugin extends Plugin {
             singleLineInput.value = '';
             multiLineTextarea.value = '';
             
-            // 從 DOM 實時判斷是否需要收起（而不是依賴 state 對象）
+            // 從 DOM 實時判斷是否需要收起
             const isActuallyExpanded = multiLineTextarea.style.display === 'block';
             if (isActuallyExpanded) {
                 multiLineTextarea.style.display = 'none';
                 singleLineInput.style.display = 'block';
-                // 同步更新 state 對象（如果存在）
-                if (dialogRefs.state) {
-                    dialogRefs.state.isExpanded = false;
-                }
             }
             
             // 清除自定義範圍按鈕的 📌 狀態
@@ -5524,7 +5520,7 @@ class CustomSearchPlugin extends Plugin {
                     document.removeEventListener('mousedown', closeOnClickOutside);
                 }
             };
-            
+
             // 對話框關閉時清理下拉
             const originalModalRemove = modal.remove.bind(modal);
             modal.remove = () => {
@@ -5534,8 +5530,14 @@ class CustomSearchPlugin extends Plugin {
                 if (this.currentModal === modal) {
                     this.currentModal = null;
                 }
+                // 清理臨時變量
+                delete this._restoreToDefaultRange;
+                delete this._restorePatternsText;
+                delete this._restoreBooleanQuery;
+                delete this._restoreDiacriticIgnore;
+                delete this._initialPendingRangeForRestore;
             };
-            
+
             // 布爾查詢開關
             const booleanQueryRow = document.createElement('div');
             booleanQueryRow.style.cssText = `display: flex; align-items: center; gap: 1px; margin-bottom: 16px;`;
@@ -5585,8 +5587,8 @@ class CustomSearchPlugin extends Plugin {
             const applyGroupOrCombinationToCustomRange = (rangeName, rangeType, patternsText, originalPatterns) => {
                 if (!rangeName || !rangeType || !patternsText) return false;
                 
-                // 展開編輯區並填充內容
-                if (!isExpanded) expandToMultiLine();
+                // 展開編輯區並填充內容（expandToMultiLine 內部已做 DOM 判斷）
+                expandToMultiLine();
                 multiLineTextarea.value = patternsText;
                 autoResizeTextarea();
                 
@@ -5607,7 +5609,6 @@ class CustomSearchPlugin extends Plugin {
                 new Notice(`✅ 已載入「${rangeName}」(${rangeType})，可繼續編輯`);
                 return true;
             };
-            // ========== 公共函數定義結束 ==========
 
             const fileNameHeader = document.createElement('div');
             fileNameHeader.style.cssText = `display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 6px; margin-top: 0px;`;
@@ -5853,9 +5854,9 @@ T44n1851_大乘義章\\d+\\.md
             };
 
             const expandToMultiLine = () => {
-                // 檢查是否已展開
+                // 從 DOM 實時判斷是否已展開
                 if (multiLineTextarea.style.display === 'block') return;
-                
+                isExpanded = true;
                 multiLineTextarea.value = singleLineInput.value;
                 singleLineInput.style.display = 'none';
                 multiLineTextarea.style.display = 'block';
@@ -5863,17 +5864,12 @@ T44n1851_大乘義章\\d+\\.md
                 multiLineTextarea.focus();
                 const len = multiLineTextarea.value.length;
                 multiLineTextarea.setSelectionRange(len, len);
-                
-                // 可以保留閉包變量用於其他用途，但核心邏輯依賴 DOM
-                isExpanded = true;  // 可選，但不影響 getFileNamePatterns
             };
 
             // 如果是多行模式（來自重新搜索的自定義範圍），直接展開並顯示多行
             if (prefillAsMultiLine && previousFileName && previousFileName.includes('\n')) {
-                isExpanded = true;
+                expandToMultiLine();
                 multiLineTextarea.value = previousFileName;
-                singleLineInput.style.display = 'none';
-                multiLineTextarea.style.display = 'block';
                 // 需要等待 DOM 更新後再調整高度，並可能多次調整以確保正確
                 setTimeout(() => {
                     autoResizeTextarea();
@@ -5883,10 +5879,8 @@ T44n1851_大乘義章\\d+\\.md
             } 
             // 如果是從歷史恢復（有 _restorePatternsText），直接展開並顯示恢復的內容
             else if (this._restorePatternsText) {
-                isExpanded = true;
+                expandToMultiLine();
                 multiLineTextarea.value = this._restorePatternsText;
-                singleLineInput.style.display = 'none';
-                multiLineTextarea.style.display = 'block';
                 setTimeout(() => {
                     autoResizeTextarea();
                     setTimeout(() => autoResizeTextarea(), 50);
@@ -5899,8 +5893,9 @@ T44n1851_大乘義章\\d+\\.md
                 // 清空編輯區
                 singleLineInput.value = '';
                 multiLineTextarea.value = '';
-                // 如果是展開狀態，收起來
-                if (isExpanded) {
+                // 從 DOM 實時判斷是否需要收起
+                const isActuallyExpanded = multiLineTextarea.style.display === 'block';
+                if (isActuallyExpanded) {
                     isExpanded = false;
                     multiLineTextarea.style.display = 'none';
                     singleLineInput.style.display = 'block';
@@ -6329,7 +6324,8 @@ T44n1851_大乘義章\\d+\\.md
                 }
                 
                 // 根據當前高亮狀態決定使用哪個範圍生成查詢
-                const hasCustomContent = isExpanded ? multiLineTextarea.value.trim() : singleLineInput.value.trim();
+                const isActuallyExpanded = multiLineTextarea.style.display === 'block';
+                const hasCustomContent = isActuallyExpanded ? multiLineTextarea.value.trim() : singleLineInput.value.trim();
                 let searchQuery = null;
                 
                 if (hasCustomContent) {
@@ -6379,6 +6375,7 @@ T44n1851_大乘義章\\d+\\.md
 
             cancelBtn.onclick = () => {
                 if (patternTooltip) patternTooltip.remove();
+                this.pendingRangeInfo = null;  // 清理待處理範圍信息
                 modal.remove();
                 resolve(null);
             };
@@ -6390,7 +6387,7 @@ T44n1851_大乘義章\\d+\\.md
                 diacriticIgnoreCheckbox: diacriticIgnoreCheckbox,
                 singleLineInput: singleLineInput,
                 multiLineTextarea: multiLineTextarea,
-                isExpanded: isExpanded,
+                isExpanded: isExpanded,  // 保留但建議不再使用（向後兼容）
                 expandToMultiLine: expandToMultiLine,
                 autoResizeTextarea: autoResizeTextarea,
                 clearCustomButtonState: clearCustomButtonState,
@@ -6398,10 +6395,6 @@ T44n1851_大乘義章\\d+\\.md
                 updateButtonHighlight: updateButtonHighlight,
                 getFileNamePatterns: getFileNamePatterns,
                 customButtonState: customButtonState,
-                // 状态对象（用于传递可变状态）
-                state: {
-                    isExpanded: isExpanded
-                }
             };
 
             searchTextInput.focus();
