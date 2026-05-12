@@ -3829,7 +3829,7 @@ class CustomSearchPlugin extends Plugin {
                     item
                         .setSection("view")
                         .setTitle("搜索面板")
-                        .setIcon("search")
+                        .setIcon("lucide-text-search")
                         .onClick(async () => {
                             // 獲取選中文本（可能為空）
                             const selectedText = editor.getSelection().trim();
@@ -3843,7 +3843,7 @@ class CustomSearchPlugin extends Plugin {
                         item
                             .setSection("view")
                             .setTitle("預設範圍快搜Ctrl+Alt+I")
-                            .setIcon("search")
+                            .setIcon("lucide-search-check")
                             .onClick(async () => {
                                 // 调用已有的快速预设搜索命令
                                 await this.quickPresetSearch(editor);
