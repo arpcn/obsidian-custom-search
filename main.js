@@ -3187,7 +3187,7 @@ class SearchResultView extends ItemView {
 
 // ==================== 插件設置 ====================
 const DEFAULT_SETTINGS = {
-    version: "2.3.1",  // 主版本.次版本.修訂版本。版本號，用於數據遷移
+    version: "2.3.2",  // 主版本.次版本.修訂版本。版本號，用於數據遷移
 
     enableBooleanQuery: false,  // 布爾查詢語法開關
     defaultDisplayMode: 'B', // 'A' 或 'B'
@@ -5640,6 +5640,17 @@ class CustomSearchPlugin extends Plugin {
                 delete this._initialPendingRangeForRestore;
             };
 
+            // 提示文本定義
+            const titleTexts = {
+                booleanNormal: '布爾查詢（與無視標籤、正則模式互斥、忽略變音）',
+                tagNormal: '無視標籤（與布爾查詢、正則模式互斥）',
+                diacriticNormal: '忽略變音（與布爾查詢互斥）',
+                DisabledByRegex: '正則模式下不可用',
+                DisabledByBoolean: '「布爾查詢」模式下不可用',
+                DisabledByTag: '「無視標籤」模式下不可用',
+                DisabledByDiacritic: '「忽略變音」模式下不可用'
+            };
+
             // 布爾查詢開關
             const booleanQueryRow = document.createElement('div');
             booleanQueryRow.style.cssText = `display: flex; align-items: center; gap: 1px; margin-bottom: 16px;`;
@@ -5652,16 +5663,9 @@ class CustomSearchPlugin extends Plugin {
             booleanQueryLabel.htmlFor = 'boolean-query-checkbox';
             booleanQueryLabel.textContent = '布爾查詢';
             booleanQueryLabel.style.cssText = `font-size: 12px; cursor: pointer;`;
-            const booleanQueryHint = document.createElement('span');
-            booleanQueryHint.textContent = '❔';
-            booleanQueryHint.style.cssText = `font-size: 11px; color: var(--text-faint); cursor: help; margin-left: 4px;`;
-            // 完整提示說明
-            booleanQueryHint.title = '📖 布爾模式（此時不用正則）\n空格 = AND, & = AND, | = OR, ! = NOT, ( ) = 分組\n\n💡 正則模式（未勾選時，帶標識：* + ? $ { } \ [ ]）\n支持正則，如 為顯自師[，\\.]?其體尊高.*故先讚德';
-            booleanQueryRow.appendChild(booleanQueryCheckbox);
-            booleanQueryRow.appendChild(booleanQueryLabel);
-            booleanQueryRow.appendChild(booleanQueryHint);
-            
-            // 無視標籤開關（放在忽略變音左邊）
+            booleanQueryLabel.title = titleTexts.booleanNormal;
+
+            // 無視標籤開關
             const htmlTagIgnoreCheckbox = document.createElement('input');
             htmlTagIgnoreCheckbox.type = 'checkbox';
             htmlTagIgnoreCheckbox.id = 'html-tag-ignore-checkbox';
@@ -5671,9 +5675,9 @@ class CustomSearchPlugin extends Plugin {
             htmlTagIgnoreLabel.htmlFor = 'html-tag-ignore-checkbox';
             htmlTagIgnoreLabel.textContent = '無視標籤';
             htmlTagIgnoreLabel.style.cssText = `font-size: 12px; cursor: pointer;`;
-            htmlTagIgnoreLabel.title = '忽略 HTML 標籤及標點符號（與布爾查詢、正則模式互斥）';
-            
-            // 忽略變音開關（放在布爾查詢開關後面，問號前面）
+            htmlTagIgnoreLabel.title = titleTexts.tagNormal;
+
+            // 忽略變音開關
             const diacriticIgnoreCheckbox = document.createElement('input');
             diacriticIgnoreCheckbox.type = 'checkbox';
             diacriticIgnoreCheckbox.id = 'diacritic-ignore-checkbox';
@@ -5696,56 +5700,163 @@ class CustomSearchPlugin extends Plugin {
             diacriticIgnoreLabel.htmlFor = 'diacritic-ignore-checkbox';
             diacriticIgnoreLabel.textContent = '忽略變音';
             diacriticIgnoreLabel.style.cssText = `font-size: 12px; cursor: pointer;`;
-            
-            // 互斥邏輯：布爾查詢 ↔ 無視標籤
+            diacriticIgnoreLabel.title = titleTexts.diacriticNormal;
+
+            // 完整提示說明
+            const booleanQueryHint = document.createElement('span');
+            booleanQueryHint.textContent = '❔';
+            booleanQueryHint.style.cssText = `font-size: 11px; color: var(--text-faint); cursor: help; margin-left: 4px;`;
+            booleanQueryHint.title = '💡 ①布爾模式：空格 & = AND;ᅠ | = OR;ᅠ ! = NOT;ᅠ ( ) = 分組\n\n💡 ②無視標籤：忽略 HTML 標籤、MD語法及標點符號\n\n💡 ③忽略變音：忽略七組變音符號（a/ā/â等）\n\n📖 ④正則模式：標識 * + ? $ { } \\ [ ]\n\n🚫 注意：①②④ 三者互斥，①③互斥';
+
+            // 互斥邏輯：布爾查詢 ↔ 無視標籤|忽略變音 
             booleanQueryCheckbox.addEventListener('change', () => {
-                if (booleanQueryCheckbox.checked && htmlTagIgnoreCheckbox.checked) {
-                    htmlTagIgnoreCheckbox.checked = false;
-                    new Notice('布爾查詢模式與「無視標籤」互斥，已自動關閉「無視標籤」');
-                }
                 if (booleanQueryCheckbox.checked) {
+                    // 關閉「無視標籤」
+                    if (htmlTagIgnoreCheckbox.checked) {
+                        htmlTagIgnoreCheckbox.checked = false;
+                    }
+                    // 關閉「忽略變音」
+                    if (diacriticIgnoreCheckbox.checked) {
+                        diacriticIgnoreCheckbox.checked = false;
+                    }
+                    // 禁用無視標籤和忽略變音
                     htmlTagIgnoreCheckbox.disabled = true;
                     htmlTagIgnoreLabel.style.opacity = '0.5';
+                    diacriticIgnoreCheckbox.disabled = true;
+                    diacriticIgnoreLabel.style.opacity = '0.5';
                 } else {
-                    htmlTagIgnoreCheckbox.disabled = false;
-                    htmlTagIgnoreLabel.style.opacity = '1';
+                    // 恢復無視標籤的可用狀態（需要檢查正則模式）
+                    const searchValue = searchTextInput.value;
+                    const isRegexMode = isRegexPattern(searchValue);
+                    if (!isRegexMode) {
+                        htmlTagIgnoreCheckbox.disabled = false;
+                        htmlTagIgnoreLabel.style.opacity = '1';
+                        diacriticIgnoreCheckbox.disabled = false;
+                        diacriticIgnoreLabel.style.opacity = '1';
+                    }
                 }
             });
-            
+
+            // 互斥：忽略變音 ↔ 布爾查詢 
+            diacriticIgnoreCheckbox.addEventListener('change', () => {
+                if (diacriticIgnoreCheckbox.checked && booleanQueryCheckbox.checked) {
+                    // 關閉「布爾查詢」
+                    booleanQueryCheckbox.checked = false;
+                }
+                if (diacriticIgnoreCheckbox.checked) {
+                    booleanQueryCheckbox.disabled = true;
+                    booleanQueryLabel.style.opacity = '0.5';
+                } else {
+                    // 恢復布爾查詢的可用狀態（需要檢查正則模式和無視標籤的狀態）
+                    const searchValue = searchTextInput.value;
+                    const isRegexMode = isRegexPattern(searchValue);
+                    const isTagIgnoreOn = htmlTagIgnoreCheckbox.checked;
+                    if (!isRegexMode && !isTagIgnoreOn) {
+                        booleanQueryCheckbox.disabled = false;
+                        booleanQueryLabel.style.opacity = '1';
+                    }
+                }
+            });
+
             htmlTagIgnoreCheckbox.addEventListener('change', () => {
                 if (htmlTagIgnoreCheckbox.checked && booleanQueryCheckbox.checked) {
+                    // 關閉「布爾查詢」
                     booleanQueryCheckbox.checked = false;
-                    new Notice('「無視標籤」與布爾查詢模式互斥，已自動關閉布爾查詢');
+                }
+                if (htmlTagIgnoreCheckbox.checked) {
+                    booleanQueryCheckbox.disabled = true;
+                    booleanQueryLabel.style.opacity = '0.5';
+                } else {
+                    // 恢復布爾查詢的可用狀態（需要檢查正則模式和忽略變音的狀態）
+                    const searchValue = searchTextInput.value;
+                    const isRegexMode = isRegexPattern(searchValue);
+                    const isDiacriticIgnoreOn = diacriticIgnoreCheckbox.checked;
+                    if (!isRegexMode && !isDiacriticIgnoreOn) {
+                        booleanQueryCheckbox.disabled = false;
+                        booleanQueryLabel.style.opacity = '1';
+                    }
                 }
             });
-            
-            // 監聽搜索輸入框的正則模式檢測
-            const checkRegexModeAndDisableTagIgnore = () => {
+
+            // 監聽搜索輸入框的正則模式檢測（普通文本分支加入忽略變音判斷）
+            const checkModeConflicts = () => {
                 const searchValue = searchTextInput.value;
                 const isRegexMode = isRegexPattern(searchValue);
-                if (isRegexMode && htmlTagIgnoreCheckbox.checked) {
-                    htmlTagIgnoreCheckbox.checked = false;
-                    new Notice('正則模式與「無視標籤」互斥，已自動關閉「無視標籤」');
+                // 布爾模式與正則互斥
+                if (isRegexMode && booleanQueryCheckbox.checked) {
+                    // 關閉「布爾查詢」
+                    booleanQueryCheckbox.checked = false;
+                    // 觸發布爾模式的 change 事件，以便更新狀態
+                    booleanQueryCheckbox.dispatchEvent(new Event('change'));
                 }
+                // 正則模式與無視標籤互斥
+                if (isRegexMode && htmlTagIgnoreCheckbox.checked) {
+                    // 關閉「無視標籤」
+                    htmlTagIgnoreCheckbox.checked = false;
+                }
+
                 if (isRegexMode) {
                     htmlTagIgnoreCheckbox.disabled = true;
                     htmlTagIgnoreLabel.style.opacity = '0.5';
-                    htmlTagIgnoreLabel.title = '正則模式不支持「無視標籤」';
-                } else if (!booleanQueryCheckbox.checked) {
-                    htmlTagIgnoreCheckbox.disabled = false;
-                    htmlTagIgnoreLabel.style.opacity = '1';
-                    htmlTagIgnoreLabel.title = '忽略 HTML 標籤及標點符號（與布爾查詢、正則模式互斥）';
+                    htmlTagIgnoreLabel.title = titleTexts.DisabledByRegex;
+                    booleanQueryCheckbox.disabled = true;
+                    booleanQueryLabel.style.opacity = '0.5';
+                    booleanQueryLabel.title = titleTexts.DisabledByRegex;
+                    // 忽略變音可用（如果之前被布爾查詢禁用，現在恢復）
+                    diacriticIgnoreCheckbox.disabled = false;
+                    diacriticIgnoreLabel.style.opacity = '1';
+                    diacriticIgnoreLabel.title = titleTexts.diacriticNormal;
+                } else {  // 普通文本下
+                    const isBooleanOn = booleanQueryCheckbox.checked;
+                    const isTagIgnoreOn = htmlTagIgnoreCheckbox.checked;
+                    const isDiacriticIgnoreOn = diacriticIgnoreCheckbox.checked;
+
+                    // 布爾查詢的禁用状态：选中了無視標籤 或 选中了忽略變音
+                    booleanQueryCheckbox.disabled = isTagIgnoreOn || isDiacriticIgnoreOn;
+                    booleanQueryLabel.style.opacity = (isTagIgnoreOn || isDiacriticIgnoreOn) ? '0.5' : '1';
+                    booleanQueryLabel.title = (isTagIgnoreOn || isDiacriticIgnoreOn) 
+                        ? (isTagIgnoreOn ? titleTexts.DisabledByTag : titleTexts.DisabledByDiacritic)
+                        : titleTexts.booleanNormal;
+
+                    // 無視標籤的禁用状态：选中了布爾查詢
+                    htmlTagIgnoreCheckbox.disabled = isBooleanOn;
+                    htmlTagIgnoreLabel.style.opacity = isBooleanOn ? '0.5' : '1';
+                    htmlTagIgnoreLabel.title = isBooleanOn ? titleTexts.DisabledByBoolean : titleTexts.tagNormal;
+                    
+                    // 忽略變音的禁用状态：选中了布爾查詢
+                    diacriticIgnoreCheckbox.disabled = isBooleanOn;
+                    diacriticIgnoreLabel.style.opacity = isBooleanOn ? '0.5' : '1';
+                    diacriticIgnoreLabel.title = isBooleanOn ? titleTexts.DisabledByBoolean : titleTexts.diacriticNormal;
                 }
             };
-            
-            searchTextInput.addEventListener('input', checkRegexModeAndDisableTagIgnore);
-            // 初始化時檢查一次
-            setTimeout(checkRegexModeAndDisableTagIgnore, 100);
-            
+
+            searchTextInput.addEventListener('input', checkModeConflicts);
+
+            // 初始化時同步狀態，確保互斥規則生效（處理歷史恢復時可能同時開啟的情況）
+            const initSync = () => {
+                // 如果布爾查詢和忽略變音同時開啟，關閉忽略變音（優先保留布爾查詢）
+                if (booleanQueryCheckbox.checked && diacriticIgnoreCheckbox.checked) {
+                    diacriticIgnoreCheckbox.checked = false;
+                    diacriticIgnoreCheckbox.dispatchEvent(new Event('change'));
+                }
+                // 如果布爾查詢和無視標籤同時開啟，關閉無視標籤
+                if (booleanQueryCheckbox.checked && htmlTagIgnoreCheckbox.checked) {
+                    htmlTagIgnoreCheckbox.checked = false;
+                    htmlTagIgnoreCheckbox.dispatchEvent(new Event('change'));
+                }
+                // 觸發一次 checkModeConflicts 確保 UI 狀態正確
+                checkModeConflicts();
+            };
+
+            setTimeout(initSync, 100);
+
+            booleanQueryRow.appendChild(booleanQueryCheckbox);
+            booleanQueryRow.appendChild(booleanQueryLabel);
             booleanQueryRow.appendChild(htmlTagIgnoreCheckbox);
             booleanQueryRow.appendChild(htmlTagIgnoreLabel);
             booleanQueryRow.appendChild(diacriticIgnoreCheckbox);
             booleanQueryRow.appendChild(diacriticIgnoreLabel);
+            booleanQueryRow.appendChild(booleanQueryHint);
             modal.appendChild(booleanQueryRow);
 
             // ========== 公共函數：應用組/組合到自定義範圍 ==========
