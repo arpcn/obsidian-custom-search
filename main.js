@@ -3187,7 +3187,7 @@ class SearchResultView extends ItemView {
 
 // ==================== 插件設置 ====================
 const DEFAULT_SETTINGS = {
-    version: "2.3.2",  // 主版本.次版本.修訂版本。版本號，用於數據遷移
+    version: "2.3.3",  // 主版本.次版本.修訂版本。版本號，用於數據遷移
 
     enableBooleanQuery: false,  // 布爾查詢語法開關
     defaultDisplayMode: 'B', // 'A' 或 'B'
@@ -4166,8 +4166,89 @@ class CustomSearchPlugin extends Plugin {
     // ==================== 搜索函數 ====================
     
     async searchInFiles(fileNameRegexArray, searchText, isRegexContent, isBooleanQuery = false, enableDiacriticIgnore = false, enableHtmlTagIgnore = false) {
+        // ===== 可中斷搜索常量 =====
+        const SLOW_SEARCH_THRESHOLD = 2000;  // 2秒彈窗閾值
+        const STOP_CHECK_INTERVAL = 150;     // 彈窗後每150ms檢查一次停止標志
+
         const allFiles = this.app.vault.getMarkdownFiles();
         const results = [];
+        
+        // 可中斷搜索狀態
+        let shouldStop = false;           // 用戶是否要求停止
+        let hasShownSlowDialog = false;   // 是否已彈過窗
+        let slowDialogNotice = null;      // 彈窗引用
+        let isMonitoringStop = false;     // 是否已開始監控停止標志（彈窗後才啟用）
+        let lastStopCheckTime = 0;        // 上次檢查停止標志的時間
+
+        // 2秒後檢查是否需要彈窗
+        const slowTimer = setTimeout(() => {
+            if (!shouldStop && !hasShownSlowDialog) {
+                hasShownSlowDialog = true;
+                
+                // 創建自定義懸浮彈窗（非模態，不阻塞用戶操作）
+                const customNotice = document.createElement('div');
+                customNotice.className = 'custom-search-slow-notice';
+                customNotice.style.cssText = `
+                    position: fixed;
+                    bottom: 20px;
+                    right: 20px;
+                    z-index: 10000;
+                    background: var(--background-primary);
+                    border: 1px solid var(--background-modifier-border);
+                    border-radius: 8px;
+                    padding: 12px 16px;
+                    box-shadow: 0 2px 10px rgba(0,0,0,0.2);
+                    display: flex;
+                    flex-direction: column;
+                    gap: 10px;
+                    min-width: 260px;
+                `;
+                
+                const messageEl = customNotice.createEl('div', {
+                    text: '⏳ 搜索已運行超過2秒，是否繼續？',
+                    attr: { style: 'font-size: 13px;' }
+                });
+                
+                const buttonDiv = customNotice.createEl('div', {
+                    attr: { style: 'display: flex; gap: 8px; justify-content: flex-end;' }
+                });
+                
+                const continueBtn = buttonDiv.createEl('button', {
+                    text: '繼續',
+                    attr: { style: 'padding: 4px 12px; cursor: pointer;' }
+                });
+                
+                const stopBtn = buttonDiv.createEl('button', {
+                    text: '停止',
+                    attr: { style: 'padding: 4px 12px; cursor: pointer; background: var(--background-modifier-error); color: white; border: none;' }
+                });
+                
+                // 繼續按鈕點擊事件
+                continueBtn.onclick = () => {
+                    // 啟用停止標志監控
+                    isMonitoringStop = true;
+                    lastStopCheckTime = Date.now();
+                    // 更新彈窗內容，但不關閉
+                    messageEl.textContent = '🔍 搜索仍在進行中...';
+                    continueBtn.disabled = true;
+                    continueBtn.style.opacity = '0.5';
+                    // 停止按鈕保持可用
+                };
+                
+                // 停止按鈕點擊事件
+                stopBtn.onclick = () => {
+                    shouldStop = true;
+                    customNotice.remove();
+                    new Notice('⏹️ 搜索已取消，將顯示已找到的結果');
+                };
+                
+                // 添加到頁面
+                document.body.appendChild(customNotice);
+                
+                // 保存引用以便清理
+                slowDialogNotice = { hide: () => customNotice.remove() };
+            }
+        }, SLOW_SEARCH_THRESHOLD);
         
         let contentRegex = null;
         let highlightRegexForContent = null;
@@ -4388,7 +4469,35 @@ class CustomSearchPlugin extends Plugin {
         
         // new Notice(`找到 ${targetFiles.length} 個文件，正在搜索...`);
         
-        for (const file of targetFiles) {
+        for (let fileIdx = 0; fileIdx < targetFiles.length; fileIdx++) {
+            const file = targetFiles[fileIdx];
+            
+            // 僅在彈窗後（啟用了監控）才檢查停止標志
+            if (isMonitoringStop) {
+                const now = Date.now();
+                if (now - lastStopCheckTime >= STOP_CHECK_INTERVAL) {
+                    lastStopCheckTime = now;
+                    if (shouldStop) {
+                        clearTimeout(slowTimer);
+                        if (slowDialogNotice) {
+                            slowDialogNotice.hide();
+                            slowDialogNotice = null;
+                        }
+                        // 返回已找到的結果
+                        let finalHighlightRegex = highlightRegexForContent;
+                        if (!finalHighlightRegex && contentRegex) {
+                            finalHighlightRegex = this.extractHighlightRegex(contentRegex);
+                        }
+                        if (results.length > 0) {
+                            new Notice(`⏹️ 搜索已停止，已顯示 ${results.length} 處匹配（${targetFiles.length} 個文件中已完成 ${fileIdx} 個）`);
+                        } else {
+                            new Notice(`⏹️ 搜索已停止，未找到任何匹配`);
+                        }
+                        return { results, targetFilesCount: targetFiles.length, highlightRegex: finalHighlightRegex };
+                    }
+                }
+            }
+            
             const content = await this.app.vault.read(file);
             const lines = content.split('\n');
             
@@ -4417,6 +4526,13 @@ class CustomSearchPlugin extends Plugin {
         let finalHighlightRegex = highlightRegexForContent;
         if (!finalHighlightRegex && contentRegex) {
             finalHighlightRegex = this.extractHighlightRegex(contentRegex);
+        }
+        
+        // 清理計時器
+        clearTimeout(slowTimer);
+        if (slowDialogNotice) {
+            slowDialogNotice.hide();
+            slowDialogNotice = null;
         }
         
         return { results, targetFilesCount: targetFiles.length, highlightRegex: finalHighlightRegex };
