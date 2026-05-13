@@ -5640,17 +5640,6 @@ class CustomSearchPlugin extends Plugin {
                 delete this._initialPendingRangeForRestore;
             };
 
-            // 提示文本定義
-            const titleTexts = {
-                booleanNormal: '布爾查詢（與無視標籤、正則模式互斥、忽略變音）',
-                tagNormal: '無視標籤（與布爾查詢、正則模式互斥）',
-                diacriticNormal: '忽略變音（與布爾查詢互斥）',
-                DisabledByRegex: '正則模式下不可用',
-                DisabledByBoolean: '「布爾查詢」模式下不可用',
-                DisabledByTag: '「無視標籤」模式下不可用',
-                DisabledByDiacritic: '「忽略變音」模式下不可用'
-            };
-
             // 布爾查詢開關
             const booleanQueryRow = document.createElement('div');
             booleanQueryRow.style.cssText = `display: flex; align-items: center; gap: 1px; margin-bottom: 16px;`;
@@ -5663,7 +5652,7 @@ class CustomSearchPlugin extends Plugin {
             booleanQueryLabel.htmlFor = 'boolean-query-checkbox';
             booleanQueryLabel.textContent = '布爾查詢';
             booleanQueryLabel.style.cssText = `font-size: 12px; cursor: pointer;`;
-            booleanQueryLabel.title = titleTexts.booleanNormal;
+            booleanQueryLabel.title = '布爾查詢（與無視標籤、忽略變音、正則模式互斥）';
 
             // 無視標籤開關
             const htmlTagIgnoreCheckbox = document.createElement('input');
@@ -5675,7 +5664,7 @@ class CustomSearchPlugin extends Plugin {
             htmlTagIgnoreLabel.htmlFor = 'html-tag-ignore-checkbox';
             htmlTagIgnoreLabel.textContent = '無視標籤';
             htmlTagIgnoreLabel.style.cssText = `font-size: 12px; cursor: pointer;`;
-            htmlTagIgnoreLabel.title = titleTexts.tagNormal;
+            htmlTagIgnoreLabel.title = '無視標籤（與布爾查詢、正則模式互斥）';
 
             // 忽略變音開關
             const diacriticIgnoreCheckbox = document.createElement('input');
@@ -5700,7 +5689,7 @@ class CustomSearchPlugin extends Plugin {
             diacriticIgnoreLabel.htmlFor = 'diacritic-ignore-checkbox';
             diacriticIgnoreLabel.textContent = '忽略變音';
             diacriticIgnoreLabel.style.cssText = `font-size: 12px; cursor: pointer;`;
-            diacriticIgnoreLabel.title = titleTexts.diacriticNormal;
+            diacriticIgnoreLabel.title = '忽略變音（與布爾查詢互斥）';
 
             // 完整提示說明
             const booleanQueryHint = document.createElement('span');
@@ -5798,14 +5787,11 @@ class CustomSearchPlugin extends Plugin {
                 if (isRegexMode) {
                     htmlTagIgnoreCheckbox.disabled = true;
                     htmlTagIgnoreLabel.style.opacity = '0.5';
-                    htmlTagIgnoreLabel.title = titleTexts.DisabledByRegex;
                     booleanQueryCheckbox.disabled = true;
                     booleanQueryLabel.style.opacity = '0.5';
-                    booleanQueryLabel.title = titleTexts.DisabledByRegex;
                     // 忽略變音可用（如果之前被布爾查詢禁用，現在恢復）
                     diacriticIgnoreCheckbox.disabled = false;
                     diacriticIgnoreLabel.style.opacity = '1';
-                    diacriticIgnoreLabel.title = titleTexts.diacriticNormal;
                 } else {  // 普通文本下
                     const isBooleanOn = booleanQueryCheckbox.checked;
                     const isTagIgnoreOn = htmlTagIgnoreCheckbox.checked;
@@ -5814,19 +5800,14 @@ class CustomSearchPlugin extends Plugin {
                     // 布爾查詢的禁用状态：选中了無視標籤 或 选中了忽略變音
                     booleanQueryCheckbox.disabled = isTagIgnoreOn || isDiacriticIgnoreOn;
                     booleanQueryLabel.style.opacity = (isTagIgnoreOn || isDiacriticIgnoreOn) ? '0.5' : '1';
-                    booleanQueryLabel.title = (isTagIgnoreOn || isDiacriticIgnoreOn) 
-                        ? (isTagIgnoreOn ? titleTexts.DisabledByTag : titleTexts.DisabledByDiacritic)
-                        : titleTexts.booleanNormal;
 
                     // 無視標籤的禁用状态：选中了布爾查詢
                     htmlTagIgnoreCheckbox.disabled = isBooleanOn;
                     htmlTagIgnoreLabel.style.opacity = isBooleanOn ? '0.5' : '1';
-                    htmlTagIgnoreLabel.title = isBooleanOn ? titleTexts.DisabledByBoolean : titleTexts.tagNormal;
                     
                     // 忽略變音的禁用状态：选中了布爾查詢
                     diacriticIgnoreCheckbox.disabled = isBooleanOn;
                     diacriticIgnoreLabel.style.opacity = isBooleanOn ? '0.5' : '1';
-                    diacriticIgnoreLabel.title = isBooleanOn ? titleTexts.DisabledByBoolean : titleTexts.diacriticNormal;
                 }
             };
 
