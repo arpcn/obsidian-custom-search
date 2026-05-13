@@ -173,7 +173,7 @@ function processCharClassContent(content) {
     const rangeMatch = content.match(/^([a-zA-Z])-([a-zA-Z])$/);
     if (rangeMatch) {
         // 範圍轉為 \p{Latin}
-        return '\\p{Latin}';
+        return '\\p{L}';
     }
     
     // 檢查連字符作為字面字符的情況：[a-z-] 或 [-az]
@@ -185,9 +185,9 @@ function processCharClassContent(content) {
         if (content.endsWith('-') && content.length > 3) {
             // [a-z-] 中的 - 是字面，但 a-z 是範圍
             // 轉換為 [\p{Latin}-]
-            return '\\p{Latin}-';
+            return '\\p{L}-';
         }
-        return '\\p{Latin}';
+        return '\\p{L}';
     }
     
     // 處理取反符號
@@ -3187,7 +3187,7 @@ class SearchResultView extends ItemView {
 
 // ==================== 插件設置 ====================
 const DEFAULT_SETTINGS = {
-    version: "2.3.0",  // 主版本.次版本.修訂版本。版本號，用於數據遷移
+    version: "2.3.1",  // 主版本.次版本.修訂版本。版本號，用於數據遷移
 
     enableBooleanQuery: false,  // 布爾查詢語法開關
     defaultDisplayMode: 'B', // 'A' 或 'B'
@@ -4178,7 +4178,7 @@ class CustomSearchPlugin extends Plugin {
             if (isBooleanQuery) return regexSource;  // 布爾模式不應用（已通過互斥保證不會同時啟用）
             if (isRegexContent) return regexSource;  // 正則模式不應用（已通過互斥保證不會同時啟用）
             
-            const tagPunctuationPattern = '(?:<[^>]*>|\\p{P}){0,3}';
+            const tagPunctuationPattern = '(?:<[^>]*>|\\p{P}|\\p{S}){0,6}'; // html標簽、標點、md語法*^~`=_[].()
             let result = '';
             let i = 0;
             const len = regexSource.length;

@@ -1,7 +1,7 @@
 {
   "id": "custom-search",
   "name": "Custom Search",
-  "version": "2.3.0",
+  "version": "2.3.1",
   "minAppVersion": "0.15.0",
   "description": "在指定文件範圍內搜索文本，結果顯示在右側邊欄",
   "author": "arpcn",
