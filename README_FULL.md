@@ -774,7 +774,7 @@ https://github.com/arpcn/obsidian-custom-search/blob/main/CHANGELOG.md
 | **日常關鍵詞查找**             | Custom-Search |
 | **限定文件名/路徑、特定範圍**       | Custom-Search |
 | **排除特定文件（草稿、註解、備份）**    | Custom-Search |
-| **需要結果排序**              | Custom-Search |
+| **需要結果排序、渲染**              | Custom-Search |
 | **筆記庫很大（>5000文件）**      | Custom-Search |
 | **反覆搜索相關主題（善用歷史記錄）**    | Custom-Search |
 | **需要排除內容中的關鍵詞（內容 NOT）** | Custom-Search |
