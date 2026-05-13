@@ -7498,7 +7498,11 @@ T44n1851_大乘義章\\d+\\.md
     
     async quickPresetSearch(editor) {
         const selectedText = editor.getSelection().trim();
-        if (!selectedText) { new Notice("請先選中要搜索的文本"); return; }
+        if (!selectedText) {
+            new Notice("未選中文本，直接打開搜索面板");
+            await this.handleSearch(editor);
+            return;
+        }
         await navigator.clipboard.writeText(selectedText);
         // 快速預設搜索使用默認範圍
         const rangeRef = { type: "default", name: null, patternsText: null };
