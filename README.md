@@ -1,8 +1,3 @@
----
-date: 2026-04-30 14:15
-updated: 2026-05-13 19:05
----
-ᅟ<span class="date">Updated: 2026-05-13 19:05</span>
 
 # 📋 Custom Search Plugin for Obsidian
 
