@@ -7632,7 +7632,11 @@ T44n1851_大乘義章\\d+\\.md
         await navigator.clipboard.writeText(selectedText);
         // 快速預設搜索使用默認範圍
         const rangeRef = { type: "default", name: null, patternsText: null };
-        await this.searchAndShowInSidebar(selectedText, [], true, null, false, rangeRef, false);
+        // 读取全局设置中的默认值
+        const isBooleanQuery = this.settings.enableBooleanQuery || false;
+        const enableDiacriticIgnore = this.settings.enableDiacriticIgnore || false;
+        const enableHtmlTagIgnore = this.settings.enableHtmlTagIgnore || false;
+        await this.searchAndShowInSidebar(selectedText, [], true, null, false, rangeRef, isBooleanQuery, enableDiacriticIgnore, enableHtmlTagIgnore);
     }
 }
 
