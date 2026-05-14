@@ -3187,10 +3187,12 @@ class SearchResultView extends ItemView {
 
 // ==================== 插件設置 ====================
 const DEFAULT_SETTINGS = {
-    version: "2.3.3",  // 主版本.次版本.修訂版本。版本號，用於數據遷移
+    version: "2.4.0",  // 主版本.次版本.修訂版本。版本號，用於數據遷移
 
-    enableBooleanQuery: false,  // 布爾查詢語法開關
-    defaultDisplayMode: 'B', // 'A' 或 'B'
+    enableBooleanQuery: false,  // 布爾查詢默認值
+    enableHtmlTagIgnore: false,     // 無視標籤默認值
+    enableDiacriticIgnore: false,   // 忽略變音默認值
+    defaultDisplayMode: 'B', // 'A' 'B' 或 'C'
     defaultFilePatterns: [  // 用戶自定義的默認文件模式
         "(books|mynotes)[\\d-]+\\.md",
         "note[\\d-]+\\.md",
@@ -4165,7 +4167,7 @@ class CustomSearchPlugin extends Plugin {
 
     // ==================== 搜索函數 ====================
     
-    async searchInFiles(fileNameRegexArray, searchText, isRegexContent, isBooleanQuery = false, enableDiacriticIgnore = false, enableHtmlTagIgnore = false) {
+    async searchInFiles(fileNameRegexArray, contentRegex, highlightRegex) {
         // ===== 可中斷搜索常量 =====
         const SLOW_SEARCH_THRESHOLD = 2000;  // 2秒彈窗閾值
         const STOP_CHECK_INTERVAL = 150;     // 彈窗後每150ms檢查一次停止標志
@@ -4249,127 +4251,6 @@ class CustomSearchPlugin extends Plugin {
                 slowDialogNotice = { hide: () => customNotice.remove() };
             }
         }, SLOW_SEARCH_THRESHOLD);
-        
-        let contentRegex = null;
-        let highlightRegexForContent = null;
-        
-        // 輔助函數：在正則的每個字符之間插入標籤/標點忽略模式
-        const insertTagIgnorePattern = (regexSource) => {
-            if (!enableHtmlTagIgnore) return regexSource;
-            if (isBooleanQuery) return regexSource;  // 布爾模式不應用（已通過互斥保證不會同時啟用）
-            if (isRegexContent) return regexSource;  // 正則模式不應用（已通過互斥保證不會同時啟用）
-            
-            const tagPunctuationPattern = '(?:<[^>]*>|\\p{P}|\\p{S}){0,6}'; // html標簽、標點、md語法*^~`=_[].()
-            let result = '';
-            let i = 0;
-            const len = regexSource.length;
-            let inCharClass = false;
-            let charClassContent = '';
-            
-            while (i < len) {
-                const ch = regexSource[i];
-                const prevCh = i > 0 ? regexSource[i - 1] : '';
-                const isEscaped = prevCh === '\\';
-                
-                // 處理轉義字符：跳過下一個字符
-                if (ch === '\\' && !isEscaped) {
-                    result += ch;
-                    i++;
-                    if (i < len) {
-                        result += regexSource[i];
-                        i++;
-                    }
-                    continue;
-                }
-                
-                // 處理字符組邊界
-                if (ch === '[' && !isEscaped) {
-                    if (inCharClass) {
-                        charClassContent += ch;
-                    } else {
-                        inCharClass = true;
-                        charClassContent = '';
-                    }
-                    result += ch;
-                    i++;
-                    continue;
-                }
-                
-                if (ch === ']' && !isEscaped && inCharClass) {
-                    inCharClass = false;
-                    result += ch;
-                    i++;
-                    continue;
-                }
-                
-                // 在字符組內部，原樣輸出
-                if (inCharClass) {
-                    result += ch;
-                    i++;
-                    continue;
-                }
-                
-                // 普通字符：輸出當前字符，然後如果不是最後一個字符，插入忽略模式
-                result += ch;
-                if (i + 1 < len) {
-                    // 檢查下一個字符是否為量詞或特殊字符
-                    const nextCh = regexSource[i + 1];
-                    if (!'*+?{}'.includes(nextCh)) {
-                        result += tagPunctuationPattern;
-                    }
-                }
-                i++;
-            }
-            
-            return result;
-        };
-        
-        // 根據模式生成忽略變音符號的正則
-        if (isBooleanQuery) {
-            // 布爾模式：先轉正則，再轉換
-            const booleanRegex = this.parseBooleanQuery(searchText, enableDiacriticIgnore);
-            if (booleanRegex) {
-                contentRegex = booleanRegex;
-                highlightRegexForContent = this.extractHighlightRegex(contentRegex);
-            } else {
-                return null;
-            }
-        } else if (isRegexContent) {
-            // 正則模式：直接轉換用戶輸入的正則（不應用標籤忽略，通過互斥保證不會同時啟用）
-            let finalSource = searchText;
-            if (enableDiacriticIgnore) {
-                finalSource = convertRegexToIgnoreDiacritics(searchText);
-            }
-            try {
-                contentRegex = new RegExp(finalSource, 'iu');
-                highlightRegexForContent = this.extractHighlightRegex(contentRegex);
-            } catch (e) {
-                new Notice(`❌ 內容正則表達式錯誤：${e.message}`);
-                return null;
-            }
-        } else {
-            // 普通文本模式：轉換為正則後搜索
-            let finalPattern;
-            if (enableDiacriticIgnore) {
-                finalPattern = convertPlainTextToIgnoreDiacritics(searchText);
-            } else {
-                finalPattern = searchText.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-            }
-            
-            // 應用標籤/標點忽略模式
-            if (enableHtmlTagIgnore) {
-                finalPattern = insertTagIgnorePattern(finalPattern);
-            }
-            
-            try {
-                contentRegex = new RegExp(finalPattern, 'iu');
-                // 高亮用正則：直接使用搜索正則（會連帶高亮標籤和標點，可接受）
-                highlightRegexForContent = new RegExp(contentRegex.source, 'giu');
-            } catch (e) {
-                new Notice(`❌ 文本轉正則錯誤：${e.message}`);
-                return null;
-            }
-        }
 
         // 判斷是否為包含排除信息的對象
         let includePatterns, excludePatterns, mode;
@@ -4522,12 +4403,6 @@ class CustomSearchPlugin extends Plugin {
             }
         }
         
-        // 生成高亮用的正則表達式（如果還沒有生成）
-        let finalHighlightRegex = highlightRegexForContent;
-        if (!finalHighlightRegex && contentRegex) {
-            finalHighlightRegex = this.extractHighlightRegex(contentRegex);
-        }
-        
         // 清理計時器
         clearTimeout(slowTimer);
         if (slowDialogNotice) {
@@ -4535,7 +4410,7 @@ class CustomSearchPlugin extends Plugin {
             slowDialogNotice = null;
         }
         
-        return { results, targetFilesCount: targetFiles.length, highlightRegex: finalHighlightRegex };
+        return { results, targetFilesCount: targetFiles.length, highlightRegex: highlightRegex };
     }
 
     /**
@@ -4847,9 +4722,7 @@ class CustomSearchPlugin extends Plugin {
     
     async searchAndShowInSidebar(searchText, fileNamePatterns, isPreset, rangeDisplay = null, skipHistorySave = false, rangeRef = null, isBooleanQuery = false, enableDiacriticIgnore = false, enableHtmlTagIgnore = false) {
         const isRegex = isRegexPattern(searchText);
-        this._enableDiacriticIgnore = enableDiacriticIgnore;
-        this._enableHtmlTagIgnore = enableHtmlTagIgnore;
-        
+
         // 使用新的解析函數獲取包含排除信息的對象
         let patternsForSearch;
         if (isPreset) {
@@ -4859,14 +4732,146 @@ class CustomSearchPlugin extends Plugin {
         } else {
             patternsForSearch = parsePatternsWithExcludes(fileNamePatterns);
         }
-        
+
         // 檢查是否有有效的包含或排除模式
         if (patternsForSearch.includePatterns.length === 0 && patternsForSearch.excludePatterns.length === 0) {
             new Notice(`❌ 沒有有效的文件名模式`);
             return false;
         }
 
-        const searchResult = await this.searchInFiles(patternsForSearch, searchText, isRegex, isBooleanQuery, this._enableDiacriticIgnore || false, this._enableHtmlTagIgnore || false);
+        // 在調用 searchInFiles 之前，根據模式生成 contentRegex 和 highlightRegex
+        let contentRegex = null;
+        let highlightRegexForContent = null;
+        const isRegexContent = isRegex;
+        
+        // 輔助函數：在正則的每個字符之間插入標籤/標點忽略模式
+        const insertTagIgnorePattern = (regexSource) => {
+            if (!enableHtmlTagIgnore) return regexSource;
+            if (isBooleanQuery) return regexSource;  // 布爾模式不應用（已通過互斥保證不會同時啟用）
+            if (isRegexContent) return regexSource;  // 正則模式不應用（已通過互斥保證不會同時啟用）
+            
+            const tagPunctuationPattern = '(?:<[^>]*>|\\p{P}|\\p{S}){0,6}'; // html標簽、標點、md語法*^~`=_[].()
+            let result = '';
+            let i = 0;
+            const len = regexSource.length;
+            let inCharClass = false;
+            let charClassContent = '';
+            
+            while (i < len) {
+                const ch = regexSource[i];
+                const prevCh = i > 0 ? regexSource[i - 1] : '';
+                const isEscaped = prevCh === '\\';
+                
+                // 處理轉義字符：跳過下一個字符
+                if (ch === '\\' && !isEscaped) {
+                    result += ch;
+                    i++;
+                    if (i < len) {
+                        result += regexSource[i];
+                        i++;
+                    }
+                    continue;
+                }
+                
+                // 處理字符組邊界
+                if (ch === '[' && !isEscaped) {
+                    if (inCharClass) {
+                        charClassContent += ch;
+                    } else {
+                        inCharClass = true;
+                        charClassContent = '';
+                    }
+                    result += ch;
+                    i++;
+                    continue;
+                }
+                
+                if (ch === ']' && !isEscaped && inCharClass) {
+                    inCharClass = false;
+                    result += ch;
+                    i++;
+                    continue;
+                }
+                
+                // 在字符組內部，原樣輸出
+                if (inCharClass) {
+                    result += ch;
+                    i++;
+                    continue;
+                }
+                
+                // 普通字符：輸出當前字符，然後如果不是最後一個字符，插入忽略模式
+                result += ch;
+                if (i + 1 < len) {
+                    // 檢查下一個字符是否為量詞或特殊字符
+                    const nextCh = regexSource[i + 1];
+                    if (!'*+?{}'.includes(nextCh)) {
+                        result += tagPunctuationPattern;
+                    }
+                }
+                i++;
+            }
+            
+            return result;
+        };
+
+        // 根據模式生成忽略變音符號的正則
+        if (isBooleanQuery) {
+            // 布爾模式：先轉正則，再轉換
+            const booleanRegex = this.parseBooleanQuery(searchText, enableDiacriticIgnore);
+            if (booleanRegex) {
+                contentRegex = booleanRegex;
+                highlightRegexForContent = this.extractHighlightRegex(contentRegex);
+            } else {
+                return false;
+            }
+        } else if (isRegexContent) {
+            // 正則模式：直接轉換用戶輸入的正則（不應用無視標籤，通過互斥保證不會同時啟用）
+            let finalSource = searchText;
+            if (enableDiacriticIgnore) {
+                finalSource = convertRegexToIgnoreDiacritics(searchText);
+            }
+            try {
+                contentRegex = new RegExp(finalSource, 'iu');
+                highlightRegexForContent = this.extractHighlightRegex(contentRegex);
+            } catch (e) {
+                new Notice(`❌ 內容正則表達式錯誤：${e.message}`);
+                return false;
+            }
+        } else {
+            // 普通文本模式：轉換為正則後搜索
+            let finalPattern;
+            if (enableDiacriticIgnore) {
+                finalPattern = convertPlainTextToIgnoreDiacritics(searchText);
+            } else {
+                finalPattern = searchText.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            }
+
+            // 「無視標籤」，先刪除指定標點，再應用標籤/標點忽略模式
+            if (enableHtmlTagIgnore) {
+                // 先刪除指定標點
+                // 定義要去掉的標點字符集合
+                // 中文標點：，。、；：？！「」『』（）【】
+                // 英文標點：,.;:?!   ---()\[\]{}<>\/|\\`~@#$%^&*_=+ 
+                // 普通文本模式下，所有標點都是字面字符，直接刪除即可
+                // const punctuationToRemoveA = /[，。、；：？！「」『』（）【】,.;:?!]/g; // 備用A：删除指定标点
+                const punctuationToRemoveB = /<[^>]*>|[\p{P}\p{S}]/gu; // 備用B：删除 HTML 标签、所有标点、所有符号
+                finalPattern = finalPattern.replace(punctuationToRemoveB, '');
+                // 再插入忽略模式
+                finalPattern = insertTagIgnorePattern(finalPattern);
+            }
+
+            try {
+                contentRegex = new RegExp(finalPattern, 'iu');
+                // 高亮用正則：直接使用搜索正則（會連帶高亮標籤和標點，可接受）
+                highlightRegexForContent = new RegExp(contentRegex.source, 'giu');
+            } catch (e) {
+                new Notice(`❌ 文本轉正則錯誤：${e.message}`);
+                return false;
+            }
+        }
+
+        const searchResult = await this.searchInFiles(patternsForSearch, contentRegex, highlightRegexForContent);
 
         if (searchResult === null) return false;
         
@@ -4977,6 +4982,10 @@ class CustomSearchPlugin extends Plugin {
             historyItem.enableDiacriticIgnore = false;
             needsSave = true;
         }
+        if (historyItem.enableHtmlTagIgnore === undefined) {
+            historyItem.enableHtmlTagIgnore = false;
+            needsSave = true;
+        }
         if (!historyItem.rangeRef) {
             historyItem.rangeRef = { type: "default", name: null, patternsText: null };
             needsSave = true;
@@ -4990,6 +4999,7 @@ class CustomSearchPlugin extends Plugin {
         const rangeRef = historyItem.rangeRef;
         const isBooleanQuery = historyItem.isBooleanQuery || false;
         const enableDiacriticIgnore = historyItem.enableDiacriticIgnore || false;
+        const enableHtmlTagIgnore = historyItem.enableHtmlTagIgnore || false;
         
         // 根據 rangeRef 類型準備恢復參數
         let patternsTextToRestore = "";
@@ -5051,9 +5061,10 @@ class CustomSearchPlugin extends Plugin {
             prefillAsMultiLine,
             restoreRangeRef,  // 傳入 rangeRef 用於恢復組/組合狀態
             isBooleanQuery,
-            enableDiacriticIgnore
+            enableDiacriticIgnore,
+            enableHtmlTagIgnore
         );
-        
+
         // 如果用戶在對話框中提交了搜索，則執行搜索
         if (result) {
             await this.plugin.executeSearchFromDialogResult(result, { skipHistorySave: true });
@@ -5093,6 +5104,7 @@ class CustomSearchPlugin extends Plugin {
         const rangeRef = historyItem.rangeRef;
         const isBooleanQuery = historyItem.isBooleanQuery || false;
         const enableDiacriticIgnore = historyItem.enableDiacriticIgnore || false;
+        const enableHtmlTagIgnore = historyItem.enableHtmlTagIgnore || false;
         
         // 解構對話框引用
         const {
@@ -5116,23 +5128,21 @@ class CustomSearchPlugin extends Plugin {
         
         // 1. 更新搜索內容
         searchTextInput.value = searchText;
-        
-        // 2. 更新布爾模式開關
+        // 2. 更新開關：布爾模式、無視標籤、忽略變音
         booleanQueryCheckbox.checked = isBooleanQuery;
-        
-        // 3. 更新忽略變音開關
+        htmlTagIgnoreCheckbox.checked = enableHtmlTagIgnore;
         diacriticIgnoreCheckbox.checked = enableDiacriticIgnore;
-        
-        // 4. 更新無視標籤開關
-        if (typeof htmlTagIgnoreCheckbox !== 'undefined') {
-            htmlTagIgnoreCheckbox.checked = historyItem.enableHtmlTagIgnore || false;
-            // 觸發互斥檢查
-            const event = new Event('change');
-            booleanQueryCheckbox.dispatchEvent(event);
-            searchTextInput.dispatchEvent(new Event('input'));
-        }
+        // 3. 依次觸發 change 事件，執行互斥邏輯
+        const boolEvent = new Event('change');
+        const tagEvent = new Event('change');
+        const diaEvent = new Event('change');
+        booleanQueryCheckbox.dispatchEvent(boolEvent);
+        htmlTagIgnoreCheckbox.dispatchEvent(tagEvent);
+        diacriticIgnoreCheckbox.dispatchEvent(diaEvent);
+        // 觸發 input 事件以重新檢測正則模式
+        searchTextInput.dispatchEvent(new Event('input'));
 
-        // 5. 根據 rangeRef 類型更新編輯區和自定義範圍狀態
+        // 4. 根據 rangeRef 類型更新編輯區和自定義範圍狀態
         if (rangeRef.type === "default") {
             // 預設範圍：清空編輯區，收起多行模式，清除自定義範圍狀態
             singleLineInput.value = '';
@@ -5299,7 +5309,7 @@ class CustomSearchPlugin extends Plugin {
 
     // ==================== 對話框函數 ====================
 
-    async showSearchModeDialog(selectedText, previousFileName = '', prefillAsMultiLine = false, restoreRangeRef = null, initialBooleanQuery = null, initialDiacriticIgnore = false, initialHtmlTagIgnore = false) {
+    async showSearchModeDialog(selectedText, previousFileName = '', prefillAsMultiLine = false, restoreRangeRef = null, initialBooleanQuery = null, initialDiacriticIgnore = null, initialHtmlTagIgnore = null) {
         const filePatterns = this.filePatterns;
         
         // 如果已經存在對話框，更新內容並聚焦，不創建新對話框
@@ -5774,7 +5784,7 @@ class CustomSearchPlugin extends Plugin {
             const htmlTagIgnoreCheckbox = document.createElement('input');
             htmlTagIgnoreCheckbox.type = 'checkbox';
             htmlTagIgnoreCheckbox.id = 'html-tag-ignore-checkbox';
-            htmlTagIgnoreCheckbox.checked = initialHtmlTagIgnore;
+            htmlTagIgnoreCheckbox.checked = initialHtmlTagIgnore !== null ? initialHtmlTagIgnore : this.settings.enableHtmlTagIgnore;
             htmlTagIgnoreCheckbox.style.cssText = `width: 10px; height: 10px; cursor: pointer; margin-left: 12px; margin-bottom: 3px;`;
             const htmlTagIgnoreLabel = document.createElement('label');
             htmlTagIgnoreLabel.htmlFor = 'html-tag-ignore-checkbox';
@@ -5786,7 +5796,7 @@ class CustomSearchPlugin extends Plugin {
             const diacriticIgnoreCheckbox = document.createElement('input');
             diacriticIgnoreCheckbox.type = 'checkbox';
             diacriticIgnoreCheckbox.id = 'diacritic-ignore-checkbox';
-            diacriticIgnoreCheckbox.checked = initialDiacriticIgnore;
+            diacriticIgnoreCheckbox.checked = initialDiacriticIgnore !== null ? initialDiacriticIgnore : this.settings.enableDiacriticIgnore;
             // 從歷史恢復布爾模式、無視標籤開關和忽略變音開關（優先級高於 initialBooleanQuery）
             if (this._restoreBooleanQuery !== undefined) {
                 booleanQueryCheckbox.checked = this._restoreBooleanQuery;
@@ -7813,13 +7823,55 @@ class CustomSearchSettingTab extends PluginSettingTab {
 
         // 布爾查詢開關
         new Setting(searchPanel)
-            .setName("啟用布爾查詢語法")
-            .setDesc("啟用後，搜索內容支持 &(與)、|(或)、!(非) 及括號 ( )。注意：正則模式需用 / / 包裹")
+            .setName("布爾查詢（默認值）")
+            .setDesc("啟用後，搜索內容支持 &(與)、|(或)、!(非) 及括號 ( )。")
             .addToggle(toggle => toggle
                 .setValue(this.plugin.settings.enableBooleanQuery)
                 .onChange(async (value) => {
                     this.plugin.settings.enableBooleanQuery = value;
+                    // 互斥：如果開啟布爾查詢，則關閉無視圖標和忽略變音
+                    if (value) {
+                        if (this.plugin.settings.enableHtmlTagIgnore) {
+                            this.plugin.settings.enableHtmlTagIgnore = false;
+                        }
+                        if (this.plugin.settings.enableDiacriticIgnore) {
+                            this.plugin.settings.enableDiacriticIgnore = false;
+                        }
+                    }
                     await this.plugin.saveSettings();
+                    this.display();
+                }));
+
+        // 無視圖標默認開關
+        new Setting(searchPanel)
+            .setName("無視圖標（默認值）")
+            .setDesc("忽略 HTML 標簽、MD語法及標點符號")
+            .addToggle(toggle => toggle
+                .setValue(this.plugin.settings.enableHtmlTagIgnore)
+                .onChange(async (value) => {
+                    this.plugin.settings.enableHtmlTagIgnore = value;
+                    // 互斥：如果開啟無視圖標，則關閉布爾查詢
+                    if (value && this.plugin.settings.enableBooleanQuery) {
+                        this.plugin.settings.enableBooleanQuery = false;
+                    }
+                    await this.plugin.saveSettings();
+                    this.display();
+                }));
+
+        // 忽略變音默認開關
+        new Setting(searchPanel)
+            .setName("忽略變音（默認值）")
+            .setDesc("忽略七組變音符號（a/ā/â等）")
+            .addToggle(toggle => toggle
+                .setValue(this.plugin.settings.enableDiacriticIgnore)
+                .onChange(async (value) => {
+                    this.plugin.settings.enableDiacriticIgnore = value;
+                    // 互斥：如果開啟忽略變音，則關閉布爾查詢
+                    if (value && this.plugin.settings.enableBooleanQuery) {
+                        this.plugin.settings.enableBooleanQuery = false;
+                    }
+                    await this.plugin.saveSettings();
+                    this.display();
                 }));
 
         // 默認文件模式設置
@@ -8677,7 +8729,7 @@ class CustomSearchSettingTab extends PluginSettingTab {
         helpPanel.createEl("h3", { text: "可用命令", attr: { style: "margin-top: 0px;" } });
 
         const commandList = [
-            { name: "搜索面板", hasContextMenu: true, description: "選中文本後，打開搜索模式對話框" },
+            { name: "搜索面板", hasContextMenu: true, description: "打開搜索模式對話框" },
             { name: "快速預設範圍搜索", hasContextMenu: true, description: "選中文本後，使用默認範圍快速搜索" },
             { name: "打開結果面板", hasContextMenu: false, description: "打開或聚焦搜索結果側邊欄" },
             { name: "管理文件組/組合", hasContextMenu: false, description: "管理自定義的文件組和組合" }
@@ -8730,6 +8782,20 @@ class CustomSearchSettingTab extends PluginSettingTab {
             • 註釋行以 # 開頭<br>
             • 修改後需要重新啟動插件或重新搜索才能生效
         `;
+
+        // GitHub 鏈接
+        const githubLink = helpPanel.createEl("div", {
+            attr: { style: "margin-top: 20px; padding: 10px; text-align: center; border-top: 1px solid var(--background-modifier-border);" }
+        });
+        githubLink.createEl("a", {
+            text: "📦 GitHub 地址",
+            attr: {
+                href: "https://github.com/arpcn/obsidian-custom-search",
+                target: "_blank",
+                style: "color: var(--text-accent); text-decoration: none; font-size: 12px;"
+            }
+        });
+
     }
 }
 
