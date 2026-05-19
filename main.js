@@ -952,7 +952,7 @@ class SearchResultView extends ItemView {
         }
     }
 
-    // 截取行內容（狀態A專用）- 只處理純文本
+    // 截取行內容（狀態A專用）- 支持跳過 Markdown 不可見字符
     truncateLine(lineContent, keyword, isRegex, highlightRegex = null) {
         if (!this.charWidth || !this.panelWidth || this.panelWidth <= 0) {
             return lineContent;
@@ -977,97 +977,103 @@ class SearchResultView extends ItemView {
         // 輔助函數：判斷是否為零寬度字符（完全跳過）
         const isZeroWidthCombining = (char) => zeroWidthSet.has(char.charCodeAt(0));
 
-        // 計算字符串的單位長度
-        // 參數: str - 字符串, skipZeroWidth - 是否跳過零寬度字符, skipCompensated - 是否跳過窄字符
-        const getUnitLength = (str, skipZeroWidth = true, skipCompensated = true) => {
-            let units = 0;
-            for (const char of str) {
-                if (skipZeroWidth && isZeroWidthCombining(char)) {
-                    continue;  // 跳過零寬度疊加字符
+        // 輔助函數：根據累積單位數組查找對應的字符索引（二分查找）
+        const findIndexByUnit = (cumUnits, targetUnit) => {
+            if (targetUnit <= 0) return 0;
+            if (targetUnit >= cumUnits[cumUnits.length - 1]) return cumUnits.length - 1;
+            
+            let left = 0;
+            let right = cumUnits.length - 1;
+            while (left <= right) {
+                const mid = Math.floor((left + right) / 2);
+                if (cumUnits[mid] < targetUnit) {
+                    left = mid + 1;
+                } else if (cumUnits[mid] > targetUnit) {
+                    right = mid - 1;
+                } else {
+                    return mid;
                 }
-                if (skipCompensated && isCompensatedChar(char)) {
-                    continue;  // 跳過窄字符（後續單獨折算）
-                }
-                units += isFullwidth(char) ? 2 : 1;
             }
-            return units;
-        };
-        
-        // 根據單位長度截取字符串
-        const truncateByUnits = (str, maxUnits) => {
-            let units = 0;
-            let result = '';
-            for (const char of str) {
-                // 零寬度疊加字符：直接保留，不計入長度
-                if (isZeroWidthCombining(char)) {
-                    result += char;
-                    continue;
-                }
-                // 窄字符：直接保留，不計入長度（後續折算）
-                if (isCompensatedChar(char)) {
-                    result += char;
-                    continue;
-                }
-                const charUnits = isFullwidth(char) ? 2 : 1;
-                if (units + charUnits > maxUnits) break;
-                units += charUnits;
-                result += char;
-            }
-            return result;
+            return left; // 返回第一個大於等於 targetUnit 的索引
         };
         
         // 修正：半角字符寬度是全角的一半，所以要乘以 2
         const availableUnits = Math.floor(this.panelWidth / this.charWidth * 2) - 4;
         if (availableUnits <= 0) return lineContent;
         
-        // 找到關鍵字位置 - 優先使用 highlightRegex
-        let keywordStart = -1;
-        let keywordEnd = -1;
-        let keywordUnits = 0;
-
+        // 構建可見字符串和位置映射（跳過渲染後不可見的 Markdown 標記）
+        const { visibleString, displayToOriginal } = this.buildVisibleStringWithMapping(lineContent);
+        
+        if (!visibleString) return lineContent;
+        
+        // 在可見字符串中找到關鍵詞位置 - 優先使用 highlightRegex
+        let keywordStartVisible = -1;
+        let keywordEndVisible = -1;
+        
         if (highlightRegex) {
             // 使用高亮正則找到第一個匹配的位置
-            const match = highlightRegex.exec(lineContent);
+            const match = highlightRegex.exec(visibleString);
             if (match) {
-                keywordStart = match.index;
-                keywordEnd = keywordStart + match[0].length;
-                // 計算關鍵字單位長度時也需要跳過窄字符
-                keywordUnits = getUnitLength(match[0], true, true);
+                keywordStartVisible = match.index;
+                keywordEndVisible = keywordStartVisible + match[0].length;
             }
             // 重置正則的 lastIndex
             highlightRegex.lastIndex = 0;
         } else if (isRegex) {
             try {
                 const regex = new RegExp(keyword);
-                const match = regex.exec(lineContent);
+                const match = regex.exec(visibleString);
                 if (match) {
-                    keywordStart = match.index;
-                    keywordEnd = keywordStart + match[0].length;
-                    keywordUnits = getUnitLength(match[0], true, true);
+                    keywordStartVisible = match.index;
+                    keywordEndVisible = keywordStartVisible + match[0].length;
                 }
             } catch (e) {}
         } else {
-            keywordStart = lineContent.indexOf(keyword);
-            if (keywordStart !== -1) {
-                keywordEnd = keywordStart + keyword.length;
-                keywordUnits = getUnitLength(keyword, true, true);
+            keywordStartVisible = visibleString.indexOf(keyword);
+            if (keywordStartVisible !== -1) {
+                keywordEndVisible = keywordStartVisible + keyword.length;
             }
         }
         
-        // 計算整行的單位長度（跳過窄字符）
-        const totalUnits = getUnitLength(lineContent, true, true);
-        
-        if (keywordStart === -1 || totalUnits <= availableUnits) {
+        if (keywordStartVisible === -1) {
             return lineContent;
         }
-
-        // 計算關鍵字前的單位數（跳過窄字符）
-        const beforeKeyword = lineContent.substring(0, keywordStart);
-        const beforeUnits = getUnitLength(beforeKeyword, true, true);
         
-        // 計算關鍵字後的單位數（跳過窄字符）
-        const afterKeyword = lineContent.substring(keywordEnd);
-        const afterUnits = getUnitLength(afterKeyword, true, true);
+        // ========== 一次遍歷構建累積單位數組 ==========
+        const cumUnits = new Array(visibleString.length);
+        let cum = 0;
+        for (let i = 0; i < visibleString.length; i++) {
+            const char = visibleString[i];
+            // 零寬度疊加字符：直接保留，不計入長度
+            if (isZeroWidthCombining(char)) {
+                cumUnits[i] = cum;
+                continue;
+            }
+            // 窄字符：折算為 0.2 單位
+            if (isCompensatedChar(char)) {
+                cum += 0.2;
+            } else {
+                cum += isFullwidth(char) ? 2 : 1;
+            }
+            cumUnits[i] = cum;
+        }
+        const totalUnits = cum;
+        
+        // 計算關鍵詞起始和結束的累積單位值
+        const keyStartUnit = keywordStartVisible === 0 ? 0 : cumUnits[keywordStartVisible - 1];
+        const keyEndUnit = cumUnits[keywordEndVisible - 1];
+        const keywordUnits = keyEndUnit - keyStartUnit;
+        
+        // 如果整行寬度小於可用寬度，直接返回原始行
+        if (totalUnits <= availableUnits) {
+            return lineContent;
+        }
+        
+        // 計算關鍵詞前的單位數
+        const beforeUnits = keyStartUnit;
+        
+        // 計算關鍵詞後的單位數
+        const afterUnits = totalUnits - keyEndUnit;
         
         // 決定兩邊各取多少單位
         const remainingUnits = availableUnits - keywordUnits;
@@ -1084,109 +1090,20 @@ class SearchResultView extends ItemView {
             rightUnits = afterUnits;
         }
         
-        // 截取左邊（從 keywordStart 向左，跳過窄字符）
-        let leftPart = '';
-        let units = 0;
-        for (let i = keywordStart - 1; i >= 0; i--) {
-            const char = lineContent[i];
-            // 零寬度疊加字符：直接添加，不計入長度
-            if (isZeroWidthCombining(char)) {
-                leftPart = char + leftPart;
-                continue;
-            }
-            // 窄字符：直接添加，不計入長度
-            if (isCompensatedChar(char)) {
-                leftPart = char + leftPart;
-                continue;
-            }
-            const charUnits = isFullwidth(char) ? 2 : 1;
-            if (units + charUnits > leftUnits) break;
-            leftPart = char + leftPart;
-            units += charUnits;
-        }
+        // 計算目標邊界的累積單位值
+        const targetLeftUnit = Math.max(0, keyStartUnit - leftUnits);
+        const targetRightUnit = Math.min(totalUnits, keyEndUnit + rightUnits);
         
-        // 截取右邊（從 keywordEnd 向右，跳過窄字符）
-        let rightPart = '';
-        units = 0;
-        for (let i = keywordEnd; i < lineContent.length; i++) {
-            const char = lineContent[i];
-            // 零寬度疊加字符：直接添加，不計入長度
-            if (isZeroWidthCombining(char)) {
-                rightPart += char;
-                continue;
-            }
-            // 窄字符：直接添加，不計入長度
-            if (isCompensatedChar(char)) {
-                rightPart += char;
-                continue;
-            }
-            const charUnits = isFullwidth(char) ? 2 : 1;
-            if (units + charUnits > rightUnits) break;
-            rightPart += char;
-            units += charUnits;
-        }
+        // 通過二分查找獲取邊界在可見字符串中的索引
+        const leftCutVisible = findIndexByUnit(cumUnits, targetLeftUnit);
+        const rightCutVisible = findIndexByUnit(cumUnits, targetRightUnit);
         
-        // 構建截取結果
-        let result = leftPart + lineContent.substring(keywordStart, keywordEnd) + rightPart;
+        // 映射回原始字符串位置
+        const leftOriginalPos = displayToOriginal[leftCutVisible];
+        const rightOriginalPos = displayToOriginal[rightCutVisible] + 1;
         
-        // 統計結果中的窄字符數量，折算實際寬度（疊加字符不折算寬度）
-        let compensatedCount = 0;
-        for (const char of result) {
-            if (isCompensatedChar(char)) {
-                compensatedCount++;
-            }
-        }
-        
-        // 每個窄字符折算為 0.2 單位
-        const compensatedUnits = compensatedCount * 0.2;
-        if (compensatedUnits > 0) {
-            // 如果窄字符佔用了額外空間，需要從兩端預留
-            // 從左右兩端各減去一半的窄字符寬度
-            const halfCompensatedUnits = Math.ceil(compensatedUnits / 2);
-            
-            // 重新截取左邊（減少 leftUnits 來預留空間）
-            let adjustedLeftUnits = Math.max(0, leftUnits - halfCompensatedUnits);
-            leftPart = '';
-            units = 0;
-            for (let i = keywordStart - 1; i >= 0; i--) {
-                const char = lineContent[i];
-                if (isZeroWidthCombining(char)) {
-                    leftPart = char + leftPart;
-                    continue;
-                }
-                if (isCompensatedChar(char)) {
-                    leftPart = char + leftPart;
-                    continue;
-                }
-                const charUnits = isFullwidth(char) ? 2 : 1;
-                if (units + charUnits > adjustedLeftUnits) break;
-                leftPart = char + leftPart;
-                units += charUnits;
-            }
-            
-            // 重新截取右邊（減少 rightUnits 來預留空間）
-            let adjustedRightUnits = Math.max(0, rightUnits - halfCompensatedUnits);
-            rightPart = '';
-            units = 0;
-            for (let i = keywordEnd; i < lineContent.length; i++) {
-                const char = lineContent[i];
-                if (isZeroWidthCombining(char)) {
-                    rightPart += char;
-                    continue;
-                }
-                if (isCompensatedChar(char)) {
-                    rightPart += char;
-                    continue;
-                }
-                const charUnits = isFullwidth(char) ? 2 : 1;
-                if (units + charUnits > adjustedRightUnits) break;
-                rightPart += char;
-                units += charUnits;
-            }
-            
-            // 重新構建結果
-            result = leftPart + lineContent.substring(keywordStart, keywordEnd) + rightPart;
-        }
+        // 從原始字符串截取
+        let result = lineContent.substring(leftOriginalPos, rightOriginalPos);
         
         return result;
     }
@@ -1258,6 +1175,152 @@ class SearchResultView extends ItemView {
         return line;
     }
 
+    // 检查链接的URL是否包含搜索关键词，如果包含则转义该链接
+    // 参数：line - 原始行内容，keyword - 搜索关键词，isRegex - 是否正则模式，isBooleanQuery - 是否布尔模式
+    // 返回：处理后的行内容
+    escapeLinkIfKeywordInUrl(line, keyword, isRegex, isBooleanQuery) {
+        if (!line || !keyword) return line;
+        
+        // 匹配 Markdown 链接语法：[文本](url)
+        const linkRegex = /\[([^\]]*)\]\(([^)]*)\)/g;
+        let match;
+        let hasMatch = false;
+        const toEscape = [];
+        
+        // 收集需要转义的链接位置
+        while ((match = linkRegex.exec(line)) !== null) {
+            const fullMatch = match[0];
+            const text = match[1];
+            const url = match[2];
+            const matchStart = match.index;
+            
+            // 检查 URL 是否包含搜索关键词
+            let urlContainsKeyword = false;
+            if (isBooleanQuery) {
+                // 布尔模式：将布尔表达式转为正则在URL中测试
+                const booleanRegex = this.plugin.parseBooleanQuery(keyword);
+                if (booleanRegex && booleanRegex.test(url)) {
+                    urlContainsKeyword = true;
+                }
+            } else if (isRegex) {
+                try {
+                    const regex = new RegExp(keyword);
+                    if (regex.test(url)) {
+                        urlContainsKeyword = true;
+                    }
+                } catch (e) {}
+            } else {
+                if (url.includes(keyword)) {
+                    urlContainsKeyword = true;
+                }
+            }
+            
+            if (urlContainsKeyword) {
+                toEscape.push({ start: matchStart, end: matchStart + fullMatch.length });
+            }
+        }
+        
+        // 如果没有需要转义的链接，直接返回原行
+        if (toEscape.length === 0) return line;
+        
+        // 从后向前替换，避免位置偏移
+        let result = line;
+        for (let i = toEscape.length - 1; i >= 0; i--) {
+            const { start, end } = toEscape[i];
+            const originalPart = result.substring(start, end);
+            // 在 [ 前加 \
+            const escapedPart = '\\' + originalPart;
+            result = result.substring(0, start) + escapedPart + result.substring(end);
+        }
+        
+        return result;
+    }
+
+    // 构建可见字符串（跳过渲染后不可见的标记字符），同时建立位置映射
+    // 参数：originalLine - 原始行内容
+    // 返回：{ visibleString, displayToOriginal, originalToDisplay }
+    buildVisibleStringWithMapping(originalLine) {
+        if (!originalLine) {
+            return { visibleString: "", displayToOriginal: [], originalToDisplay: [] };
+        }
+        
+        let visibleString = "";
+        const displayToOriginal = [];  // 显示字符索引 -> 原始字符索引
+        const originalToDisplay = new Array(originalLine.length).fill(-1);  // 原始字符索引 -> 显示字符索引
+        
+        let i = 0;
+        const len = originalLine.length;
+        
+        while (i < len) {
+            const ch = originalLine[i];
+            const remaining = originalLine.substring(i);
+
+            /*
+            // 跳过 ==高亮== 中的 ==
+            if (remaining.startsWith("==")) {
+                // == 标记符，跳过，不加入 visibleString
+                i += 2;
+                continue;
+            }
+            
+            // 跳过 **粗体** 中的 **
+            if (remaining.startsWith("**")) {
+                i += 2;
+                continue;
+            }
+            
+            // 跳过 *斜体* 或 _斜体_ 中的单个标记符
+            // 注意：需要区分是标记符还是普通字符（如行首列表）
+            if ((ch === '*' || ch === '_') && i + 1 < len) {
+                const nextCh = originalLine[i + 1];
+                // 简单判断：如果后面不是空格，且前面不是文字，则视为标记符
+                // 更精确的判断：检查是否有配对的结束标记
+                if (nextCh !== ' ' && (i === 0 || originalLine[i - 1] !== ' ')) {
+                    // 可能是斜体标记，跳过
+                    i += 1;
+                    continue;
+                }
+            }
+
+            // 跳过 ~~删除线~~ 中的 ~~
+            if (remaining.startsWith("~~")) {
+                i += 2;
+                continue;
+            }
+            */
+
+            // 处理链接中的 (url) 部分
+            // 查找 [text](url) 结构
+            if (ch === '[') {
+                const closeBracket = originalLine.indexOf(']', i);
+                if (closeBracket !== -1 && closeBracket + 1 < len && originalLine[closeBracket + 1] === '(') {
+                    const closeParen = originalLine.indexOf(')', closeBracket + 2);
+                    if (closeParen !== -1) {
+                        // 这是完整的链接结构
+                        // 将 [text] 部分加入 visibleString
+                        for (let j = i; j <= closeBracket; j++) {
+                            const char = originalLine[j];
+                            visibleString += char;
+                            displayToOriginal.push(j);
+                            originalToDisplay[j] = visibleString.length - 1;
+                        }
+                        // 跳过 (url) 部分，不加入 visibleString
+                        i = closeParen + 1;
+                        continue;
+                    }
+                }
+            }
+            
+            // 普通字符：加入 visibleString
+            visibleString += ch;
+            displayToOriginal.push(i);
+            originalToDisplay[i] = visibleString.length - 1;
+            i++;
+        }
+        
+        return { visibleString, displayToOriginal, originalToDisplay };
+    }
+
     // 處理行內容
     getContextLines(fileContent, lineNumber, searchText, isRegex, mode, highlightRegex = null) {
         const lines = fileContent.split('\n');
@@ -1269,6 +1332,8 @@ class SearchResultView extends ItemView {
             lineContent = this.escapeFootnoteLine(lineContent);
             // A模式：直接刪除所有反引號
             lineContent = lineContent.replace(/`/g, '');
+            // 對包含搜索關鍵詞的鏈接進行轉義（使 URL 可見）
+            lineContent = this.escapeLinkIfKeywordInUrl(lineContent, searchText, isRegex, this.isBooleanQuery);
             // 截取和渲染
             const truncatedText = this.truncateLine(lineContent, searchText, isRegex, highlightRegex);
             // 使用 highlightRegex 進行高亮
@@ -1292,6 +1357,8 @@ class SearchResultView extends ItemView {
                 const isMatchLine = (i + 1 === lineNumber);
                 // 轉義腳注引用行
                 lineContent = this.escapeFootnoteLine(lineContent);
+                // 對包含搜索關鍵詞的鏈接進行轉義（使 URL 可見）
+                lineContent = this.escapeLinkIfKeywordInUrl(lineContent, searchText, isRegex, this.isBooleanQuery);
                 if (isMatchLine) {
                     // 匹配行：處理代碼塊 → 高亮
                     lineContent = this.processCodeBlockForHighlight(lineContent, searchText, isRegex);
@@ -1477,19 +1544,49 @@ class SearchResultView extends ItemView {
             <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="20" x2="12" y2="10"></line><line x1="18" y1="20" x2="18" y2="4"></line><line x1="6" y1="20" x2="6" y2="16"></line></svg>
             <span>${this.statsText}(匹配${new Set(this.currentResults.map(r => r.file)).size})個，${this.currentResults.length}處</span>`;
         
-        // 右側：重新搜索按鈕（打開搜索面板，使用當前搜索方式）
-        const reopenBtn = statsDiv.createEl("button", {
+        // 右側：按鈕組（刷新 + 重新搜索）
+        const buttonGroup = statsDiv.createEl("div", {
+            attr: { style: "display: flex; align-items: center; gap: 4px;" }
+        });
+
+        // 刷新按鈕
+        const refreshBtn = buttonGroup.createEl("button", {
+            attr: {
+                style: "padding: 2px 8px; font-size: 10px; border-radius: 4px; cursor: pointer; background: var(--background-secondary); border: 1px solid var(--background-modifier-border); color: var(--text-muted); display: inline-flex; align-items: center; gap: 4px;",
+                title: "刷新 (⟳) 直接重新執行當前搜索"
+            }
+        });
+        refreshBtn.innerHTML = `<span>⟳</span>`;
+
+        // 綁定刷新按鈕事件
+        refreshBtn.onclick = async () => {
+            // 關閉可能打開的歷史面板
+            this.closeHistoryPanel();
+            
+            // 直接使用當前搜索參數重新執行搜索
+            await this.plugin.searchAndShowInSidebar(
+                this.currentSearchText,
+                this.currentPatternsText,
+                this.currentIsPreset,
+                this.currentRangeDisplay,
+                true,  // skipHistorySave = true，不保存到歷史
+                this.currentRangeRef,
+                this.isBooleanQuery || false,
+                this.enableDiacriticIgnore || false,
+                this.enableHtmlTagIgnore || false
+            );
+        };
+
+        // 重新搜索按鈕
+        const reopenBtn = buttonGroup.createEl("button", {
             attr: {
                 style: "padding: 2px 8px; font-size: 10px; border-radius: 4px; cursor: pointer; background: var(--background-secondary); border: 1px solid var(--background-modifier-border); color: var(--text-muted); display: inline-flex; align-items: center; gap: 4px;",
                 title: "使用當前搜索方式重新打開面板"
             }
         });
-        reopenBtn.innerHTML = `
-            <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle></svg>
-            <span>重新搜索</span>
-        `;
+        reopenBtn.innerHTML = `<span>重新搜索</span>`;
 
-            // 綁定重新搜索按鈕事件
+        // 綁定重新搜索按鈕事件
         reopenBtn.onclick = async () => {
             // 關閉可能打開的歷史面板
             this.closeHistoryPanel();
@@ -1585,6 +1682,9 @@ class SearchResultView extends ItemView {
             // 根據用戶選擇執行搜索
             await this.plugin.executeSearchFromDialogResult(result, { skipHistorySave: false });
         };
+
+        // 將按鈕組添加到 statsDiv 的右側
+        statsDiv.appendChild(buttonGroup);
 
         // 分組顯示結果
         const groupedResults = {};
@@ -3187,7 +3287,7 @@ class SearchResultView extends ItemView {
 
 // ==================== 插件設置 ====================
 const DEFAULT_SETTINGS = {
-    version: "2.4.1",  // 主版本.次版本.修訂版本。版本號，用於數據遷移
+    version: "2.4.2",  // 主版本.次版本.修訂版本。版本號，用於數據遷移
 
     enableBooleanQuery: false,  // 布爾查詢默認值
     enableHtmlTagIgnore: false,     // 無視標籤默認值
