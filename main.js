@@ -381,7 +381,7 @@ function buildNativeSearchQuery(searchText, fileNamePatterns, isPreset, isBoolea
     
     if (isPreset) {
         // 預設模式：需要解析排除模式
-        // 将正则数组转换为文本格式再解析
+        // 將正則數組轉換為文本格式再解析
         const patternsText = fileNamePatterns.map(p => p.source).join('\n');
         const parsed = parsePatternsWithExcludes(patternsText);
         includePatterns = parsed.includePatterns;
@@ -408,7 +408,7 @@ function buildNativeSearchQuery(searchText, fileNamePatterns, isPreset, isBoolea
         includeParts.push(`(${prefix}:/${patternSource}/)`);
     }
 
-    // 处理排除模式
+    // 處理排除模式
     const excludeParts = [];
     for (const pattern of excludePatterns) {
         const patternSource = pattern.source;
@@ -1175,29 +1175,29 @@ class SearchResultView extends ItemView {
         return line;
     }
 
-    // 检查链接的URL是否包含搜索关键词，如果包含则转义该链接
-    // 参数：line - 原始行内容，keyword - 搜索关键词，isRegex - 是否正则模式，isBooleanQuery - 是否布尔模式
-    // 返回：处理后的行内容
+    // 檢查鏈接的URL是否包含搜索關鍵詞，如果包含則轉義該鏈接
+    // 參數：line - 原始行內容，keyword - 搜索關鍵詞，isRegex - 是否正則模式，isBooleanQuery - 是否布爾模式
+    // 返回：處理後的行內容
     escapeLinkIfKeywordInUrl(line, keyword, isRegex, isBooleanQuery) {
         if (!line || !keyword) return line;
         
-        // 匹配 Markdown 链接语法：[文本](url)
+        // 匹配 Markdown 鏈接語法：[文本](url)
         const linkRegex = /\[([^\]]*)\]\(([^)]*)\)/g;
         let match;
         let hasMatch = false;
         const toEscape = [];
         
-        // 收集需要转义的链接位置
+        // 收集需要轉義的鏈接位置
         while ((match = linkRegex.exec(line)) !== null) {
             const fullMatch = match[0];
             const text = match[1];
             const url = match[2];
             const matchStart = match.index;
             
-            // 检查 URL 是否包含搜索关键词
+            // 檢查 URL 是否包含搜索關鍵詞
             let urlContainsKeyword = false;
             if (isBooleanQuery) {
-                // 布尔模式：将布尔表达式转为正则在URL中测试
+                // 布爾模式：將布爾表達式轉為正則在URL中測試
                 const booleanRegex = this.plugin.parseBooleanQuery(keyword);
                 if (booleanRegex && booleanRegex.test(url)) {
                     urlContainsKeyword = true;
@@ -1220,10 +1220,10 @@ class SearchResultView extends ItemView {
             }
         }
         
-        // 如果没有需要转义的链接，直接返回原行
+        // 如果沒有需要轉義的鏈接，直接返回原行
         if (toEscape.length === 0) return line;
         
-        // 从后向前替换，避免位置偏移
+        // 從後向前替換，避免位置偏移
         let result = line;
         for (let i = toEscape.length - 1; i >= 0; i--) {
             const { start, end } = toEscape[i];
@@ -1236,8 +1236,8 @@ class SearchResultView extends ItemView {
         return result;
     }
 
-    // 构建可见字符串（跳过渲染后不可见的标记字符），同时建立位置映射
-    // 参数：originalLine - 原始行内容
+    // 構建可見字符串（跳過渲染後不可見的標記字符），同時建立位置映射
+    // 參數：originalLine - 原始行內容
     // 返回：{ visibleString, displayToOriginal, originalToDisplay }
     buildVisibleStringWithMapping(originalLine) {
         if (!originalLine) {
@@ -1245,8 +1245,8 @@ class SearchResultView extends ItemView {
         }
         
         let visibleString = "";
-        const displayToOriginal = [];  // 显示字符索引 -> 原始字符索引
-        const originalToDisplay = new Array(originalLine.length).fill(-1);  // 原始字符索引 -> 显示字符索引
+        const displayToOriginal = [];  // 顯示字符索引 -> 原始字符索引
+        const originalToDisplay = new Array(originalLine.length).fill(-1);  // 原始字符索引 -> 顯示字符索引
         
         let i = 0;
         const len = originalLine.length;
@@ -1256,55 +1256,55 @@ class SearchResultView extends ItemView {
             const remaining = originalLine.substring(i);
 
             /*
-            // 跳过 ==高亮== 中的 ==
+            // 跳過 ==高亮== 中的 ==
             if (remaining.startsWith("==")) {
-                // == 标记符，跳过，不加入 visibleString
+                // == 標記符，跳過，不加入 visibleString
                 i += 2;
                 continue;
             }
             
-            // 跳过 **粗体** 中的 **
+            // 跳過 **粗體** 中的 **
             if (remaining.startsWith("**")) {
                 i += 2;
                 continue;
             }
             
-            // 跳过 *斜体* 或 _斜体_ 中的单个标记符
-            // 注意：需要区分是标记符还是普通字符（如行首列表）
+            // 跳過 *斜體* 或 _斜體_ 中的單個標記符
+            // 注意：需要區分是標記符還是普通字符（如行首列表）
             if ((ch === '*' || ch === '_') && i + 1 < len) {
                 const nextCh = originalLine[i + 1];
-                // 简单判断：如果后面不是空格，且前面不是文字，则视为标记符
-                // 更精确的判断：检查是否有配对的结束标记
+                // 簡單判斷：如果後面不是空格，且前面不是文字，則視為標記符
+                // 更精確的判斷：檢查是否有配對的結束標記
                 if (nextCh !== ' ' && (i === 0 || originalLine[i - 1] !== ' ')) {
-                    // 可能是斜体标记，跳过
+                    // 可能是斜體標記，跳過
                     i += 1;
                     continue;
                 }
             }
 
-            // 跳过 ~~删除线~~ 中的 ~~
+            // 跳過 ~~刪除線~~ 中的 ~~
             if (remaining.startsWith("~~")) {
                 i += 2;
                 continue;
             }
             */
 
-            // 处理链接中的 (url) 部分
-            // 查找 [text](url) 结构
+            // 處理鏈接中的 (url) 部分
+            // 查找 [text](url) 結構
             if (ch === '[') {
                 const closeBracket = originalLine.indexOf(']', i);
                 if (closeBracket !== -1 && closeBracket + 1 < len && originalLine[closeBracket + 1] === '(') {
                     const closeParen = originalLine.indexOf(')', closeBracket + 2);
                     if (closeParen !== -1) {
-                        // 这是完整的链接结构
-                        // 将 [text] 部分加入 visibleString
+                        // 這是完整的鏈接結構
+                        // 將 [text] 部分加入 visibleString
                         for (let j = i; j <= closeBracket; j++) {
                             const char = originalLine[j];
                             visibleString += char;
                             displayToOriginal.push(j);
                             originalToDisplay[j] = visibleString.length - 1;
                         }
-                        // 跳过 (url) 部分，不加入 visibleString
+                        // 跳過 (url) 部分，不加入 visibleString
                         i = closeParen + 1;
                         continue;
                     }
@@ -1552,7 +1552,7 @@ class SearchResultView extends ItemView {
         // 刷新按鈕
         const refreshBtn = buttonGroup.createEl("button", {
             attr: {
-                style: "padding: 2px 8px; font-size: 10px; border-radius: 4px; cursor: pointer; background: var(--background-secondary); border: 1px solid var(--background-modifier-border); color: var(--text-muted); display: inline-flex; align-items: center; gap: 4px;",
+                style: "padding: 2px 4px 6px 4px; font-size: 14px; border-radius: 4px; cursor: pointer; background: var(--background-secondary); border: 1px solid var(--background-modifier-border); color: var(--text-muted); display: inline-flex; align-items: center; gap: 4px;",
                 title: "刷新 (⟳) 直接重新執行當前搜索"
             }
         });
@@ -1580,7 +1580,7 @@ class SearchResultView extends ItemView {
         // 重新搜索按鈕
         const reopenBtn = buttonGroup.createEl("button", {
             attr: {
-                style: "padding: 2px 8px; font-size: 10px; border-radius: 4px; cursor: pointer; background: var(--background-secondary); border: 1px solid var(--background-modifier-border); color: var(--text-muted); display: inline-flex; align-items: center; gap: 4px;",
+                style: "padding: 2px 4px; font-size: 10px; border-radius: 4px; cursor: pointer; background: var(--background-secondary); border: 1px solid var(--background-modifier-border); color: var(--text-muted); display: inline-flex; align-items: center; gap: 4px;",
                 title: "使用當前搜索方式重新打開面板"
             }
         });
@@ -3082,9 +3082,9 @@ class SearchResultView extends ItemView {
     }
 
     /**
-     * 从现有对话框提取 DOM 元素引用
-     * @param {HTMLElement} modal - 对话框元素
-     * @returns {Object|null} dialogRefs 对象
+     * 從現有對話框提取 DOM 元素引用
+     * @param {HTMLElement} modal - 對話框元素
+     * @returns {Object|null} dialogRefs 對象
      */
     extractDialogRefs(modal) {
         if (!modal || !modal._dialogRefs) return null;
@@ -3963,7 +3963,7 @@ class CustomSearchPlugin extends Plugin {
                             .setTitle("預設範圍快搜Ctrl+Alt+I")
                             .setIcon("lucide-search-check")
                             .onClick(async () => {
-                                // 调用已有的快速预设搜索命令
+                                // 調用已有的快速預設搜索命令
                                 await this.quickPresetSearch(editor);
                             });
                     });
@@ -4954,8 +4954,8 @@ class CustomSearchPlugin extends Plugin {
                 // 中文標點：，。、；：？！「」『』（）【】
                 // 英文標點：,.;:?!   ---()\[\]{}<>\/|\\`~@#$%^&*_=+ 
                 // 普通文本模式下，所有標點都是字面字符，直接刪除即可
-                // const punctuationToRemoveA = /[，。、；：？！「」『』（）【】,.;:?!]/g; // 備用A：删除指定标点
-                const punctuationToRemoveB = /<[^>]*>|[\p{P}\p{S}]/gu; // 備用B：删除 HTML 标签、所有标点、所有符号
+                // const punctuationToRemoveA = /[，。、；：？！「」『』（）【】,.;:?!]/g; // 備用A：刪除指定標點
+                const punctuationToRemoveB = /<[^>]*>|[\p{P}\p{S}]/gu; // 備用B：刪除 HTML 標簽、所有標點、所有符號
                 finalPattern = finalPattern.replace(punctuationToRemoveB, '');
                 // 再插入忽略模式
                 finalPattern = insertTagIgnorePattern(finalPattern);
@@ -5051,10 +5051,10 @@ class CustomSearchPlugin extends Plugin {
     }
 
     executeNativeSearchWithPatterns(searchText, fileNamePatterns, isPreset, isBooleanQuery = false) {
-        // 如果是预设模式且 fileNamePatterns 为空，从设置中读取默认模式
+        // 如果是預設模式且 fileNamePatterns 為空，從設置中讀取默認模式
         let patternsToUse = fileNamePatterns;
         if (isPreset && (!fileNamePatterns || fileNamePatterns.length === 0)) {
-            patternsToUse = this.filePatterns;  // 使用插件加载的默认模式
+            patternsToUse = this.filePatterns;  // 使用插件加載的默認模式
         }
         const searchQuery = buildNativeSearchQuery(searchText, patternsToUse, isPreset, isBooleanQuery);
         if (!searchQuery) {
@@ -5316,10 +5316,10 @@ class CustomSearchPlugin extends Plugin {
             }
             
             if (originalPatternsText) {
-                // 使用 DOM 直接判断编辑区是否已展开（不依赖闭包变量 isExpanded）
+                // 使用 DOM 直接判斷編輯區是否已展開（不依賴閉包變量 isExpanded）
                 const isActuallyExpanded = multiLineTextarea.style.display === 'block';
                 if (!isActuallyExpanded) {
-                    // 手动展开编辑区（不复制单行输入框的值）
+                    // 手動展開編輯區（不复制單行輸入框的值）
                     singleLineInput.style.display = 'none';
                     multiLineTextarea.style.display = 'block';
                     if (autoResizeTextarea) autoResizeTextarea();
@@ -5350,10 +5350,10 @@ class CustomSearchPlugin extends Plugin {
             // 完全自定義範圍
             const patternsText = rangeRef.patternsText;
             
-            // 使用 DOM 直接判断编辑区是否已展开（不依赖闭包变量 isExpanded）
+            // 使用 DOM 直接判斷編輯區是否已展開（不依賴閉包變量 isExpanded）
             const isActuallyExpanded = multiLineTextarea.style.display === 'block';
             if (!isActuallyExpanded) {
-                // 手动展开编辑区（不复制单行输入框的值）
+                // 手動展開編輯區（不复制單行輸入框的值）
                 singleLineInput.style.display = 'none';
                 multiLineTextarea.style.display = 'block';
                 if (autoResizeTextarea) autoResizeTextarea();
@@ -6023,15 +6023,15 @@ class CustomSearchPlugin extends Plugin {
                     const isTagIgnoreOn = htmlTagIgnoreCheckbox.checked;
                     const isDiacriticIgnoreOn = diacriticIgnoreCheckbox.checked;
 
-                    // 布爾查詢的禁用状态：选中了無視標籤 或 选中了忽略變音
+                    // 布爾查詢的禁用狀態：選中了無視標籤 或 選中了忽略變音
                     booleanQueryCheckbox.disabled = isTagIgnoreOn || isDiacriticIgnoreOn;
                     booleanQueryLabel.style.opacity = (isTagIgnoreOn || isDiacriticIgnoreOn) ? '0.5' : '1';
 
-                    // 無視標籤的禁用状态：选中了布爾查詢
+                    // 無視標籤的禁用狀態：選中了布爾查詢
                     htmlTagIgnoreCheckbox.disabled = isBooleanOn;
                     htmlTagIgnoreLabel.style.opacity = isBooleanOn ? '0.5' : '1';
                     
-                    // 忽略變音的禁用状态：选中了布爾查詢
+                    // 忽略變音的禁用狀態：選中了布爾查詢
                     diacriticIgnoreCheckbox.disabled = isBooleanOn;
                     diacriticIgnoreLabel.style.opacity = isBooleanOn ? '0.5' : '1';
                 }
@@ -6867,7 +6867,7 @@ T44n1851_大乘義章\\d+\\.md
                 resolve(null);
             };
             
-            // 保存 dialogRefs 到 modal 对象上，供外部更新使用
+            // 保存 dialogRefs 到 modal 對象上，供外部更新使用
             modal._dialogRefs = {
                 searchTextInput: searchTextInput,
                 booleanQueryCheckbox: booleanQueryCheckbox,
@@ -7245,7 +7245,7 @@ T44n1851_大乘義章\\d+\\.md
                         textarea.style.height = newHeight + 'px';
                     };
                     
-                    // 初始調整高度 - 使用 setTimeout 确保 DOM 已渲染
+                    // 初始調整高度 - 使用 setTimeout 確保 DOM 已渲染
                     setTimeout(() => autoResizeTextarea(), 0);
 
                     textarea.addEventListener('blur', async () => {
@@ -7274,7 +7274,7 @@ T44n1851_大乘義章\\d+\\.md
                             contentArea.style.display = 'block';
                             toggleIcon.textContent = '▼';
                             header.style.background = 'transparent';
-                            // 展开时重新调整高度
+                            // 展開時重新調整高度
                             setTimeout(() => autoResizeTextarea(), 50);
                         }
                     };
@@ -7732,7 +7732,7 @@ T44n1851_大乘義章\\d+\\.md
         await navigator.clipboard.writeText(selectedText);
         // 快速預設搜索使用默認範圍
         const rangeRef = { type: "default", name: null, patternsText: null };
-        // 读取全局设置中的默认值
+        // 讀取全局設置中的默認值
         const isBooleanQuery = this.settings.enableBooleanQuery || false;
         const enableDiacriticIgnore = this.settings.enableDiacriticIgnore || false;
         const enableHtmlTagIgnore = this.settings.enableHtmlTagIgnore || false;
