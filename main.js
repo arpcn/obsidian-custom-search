@@ -38,7 +38,7 @@ function convertBooleanToNative(query) {
 }
 
 // ==================== 變音符號忽略功能 ====================
-// 七組字符家族映射（雙向閉包）
+// 九組字符家族映射（雙向閉包）
 const DIACRITIC_FAMILIES = [
     { members: ['a', 'ā', 'â'], regex: '[aāâ]' },
     { members: ['i', 'ī', 'î'], regex: '[iīî]' },
@@ -59,7 +59,7 @@ for (const family of DIACRITIC_FAMILIES) {
     }
 }
 
-// 檢查字符是否屬於七組家族
+// 檢查字符是否屬於九組家族
 function isDiacriticFamilyChar(ch) {
     return charToFamilyRegex.has(ch);
 }
@@ -6106,7 +6106,7 @@ class CustomSearchPlugin extends Plugin {
             const booleanQueryHint = document.createElement('span');
             booleanQueryHint.textContent = '❔';
             booleanQueryHint.style.cssText = `font-size: 11px; color: var(--text-faint); cursor: help; margin-left: 4px;`;
-            booleanQueryHint.title = '💡 ①布爾模式：空格 & = AND;ᅠ | = OR;ᅠ ! = NOT;ᅠ ( ) = 分組\n\n💡 ②無視標籤：忽略 HTML 標籤、MD語法及標點符號\n\n💡 ③忽略變音：忽略七組變音符號（a/ā/â等）\n\n📖 ④正則模式：標識 * + ? $ { } \\ [ ]\n\n🚫 注意：①②④ 三者互斥，①③互斥';
+            booleanQueryHint.title = '💡 ①布爾模式：空格 & = AND;ᅠ | = OR;ᅠ ! = NOT;ᅠ ( ) = 分組\n\n💡 ②無視標籤：忽略 HTML 標籤、MD語法及標點符號\n\n💡 ③忽略變音：忽略九組變音符號（a/ā/â等）\n\n📖 ④正則模式：標識 * + ? $ { } \\ [ ]\n\n🚫 注意：①②④ 三者互斥，①③互斥';
 
             // 互斥邏輯：布爾查詢 ↔ 無視標籤|忽略變音 
             booleanQueryCheckbox.addEventListener('change', () => {
@@ -8150,7 +8150,7 @@ class CustomSearchSettingTab extends PluginSettingTab {
         // 忽略變音默認開關
         new Setting(searchPanel)
             .setName("忽略變音（默認值）")
-            .setDesc("忽略七組變音符號（a/ā/â等）")
+            .setDesc("忽略九組變音符號（a/ā/â等）")
             .addToggle(toggle => toggle
                 .setValue(this.plugin.settings.enableDiacriticIgnore)
                 .onChange(async (value) => {
