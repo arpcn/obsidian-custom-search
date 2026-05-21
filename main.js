@@ -746,26 +746,140 @@ class SearchResultView extends ItemView {
                 finalRegex = new RegExp(finalRegex.source, finalRegex.flags + 'g');
             }
             return text.replace(finalRegex, (match) => {
-                return `<span style="background: ${keywordBg}; color: inherit;">${this.escapeHtml(match)}</span>`;
+                return `<span style="background: ${keywordBg}; color: inherit;">${(match)}</span>`;
             });
         } catch (e) {
             console.error("高亮正則錯誤:", e);
             return text;
         }
     }
-    
+
+    // 需要處理的 HTML 標籤白名單（這些標籤不佔寬度，且需要成對匹配）
+    static SKIP_HTML_TAGS = new Set([
+        'b', 'strong', 'i', 'em', 'u', 'ins', 'del', 's', 'strike',
+        'a', 'font', 'span', 'div', 'p', 'br', 'hr', 'h1', 'h2', 'h3',
+        'h4', 'h5', 'h6', 'sub', 'sup', 'mark', 'small', 'big', 'tt',
+        'code', 'pre', 'kbd', 'var', 'samp'
+    ]);
+
     /**
-     * 轉義 HTML 特殊字符
-     * @param {string} str - 原始字符串
-     * @returns {string} 轉義後的字符串
+     * 移除不成對的 HTML 標籤和自定義高亮標記 ==\?[ ... ]==
+     * @param {string} text - 要清理的文本
+     * @returns {string} 清理後的文本
      */
-    escapeHtml(str) {
-        return str
-            .replace(/&/g, '&amp;')
-            .replace(/</g, '&lt;')
-            .replace(/>/g, '&gt;')
-            .replace(/"/g, '&quot;')
-            .replace(/'/g, '&#39;');
+    removeUnpairedTagsAndMarkers(text) {
+        if (!text) return text;
+        
+        let result = text;
+
+        // 第一步：處理自定義高亮標記 ==[ 和 ==\[ 以及 ]==
+        // 收集所有需要移除的標記（包括不成對的開頭和結尾）
+        const toRemoveMarkers = [];
+        const openMarkers = ['==[', '==\\['];
+        const closeMarker = ']==';
+
+        let pos = 0;
+        const openStack = [];  // 用棧記錄開頭標記的位置
+        
+        while (pos < result.length) {
+            // 找最近的開頭標記和結尾標記
+            let openIdx = -1;
+            let openLen = 0;
+            for (const om of openMarkers) {
+                const idx = result.indexOf(om, pos);
+                if (idx !== -1 && (openIdx === -1 || idx < openIdx)) {
+                    openIdx = idx;
+                    openLen = om.length;
+                }
+            }
+            
+            const closeIdx = result.indexOf(closeMarker, pos);
+            
+            // 如果沒有找到任何標記，退出循環
+            if (openIdx === -1 && closeIdx === -1) break;
+            
+            // 決定先處理哪個標記（取位置更靠前的）
+            if (openIdx !== -1 && (closeIdx === -1 || openIdx < closeIdx)) {
+                // 先遇到開頭標記，壓入棧
+                openStack.push({ index: openIdx, length: openLen });
+                pos = openIdx + openLen;
+            } else if (closeIdx !== -1 && (openIdx === -1 || closeIdx < openIdx)) {
+                // 先遇到結尾標記
+                if (openStack.length > 0) {
+                    // 有匹配的開頭標記，彈出棧（成對保留）
+                    openStack.pop();
+                } else {
+                    // 沒有匹配的開頭標記，這個結尾標記需要移除
+                    toRemoveMarkers.push({ index: closeIdx, length: closeMarker.length });
+                }
+                pos = closeIdx + closeMarker.length;
+            }
+        }
+        
+        // 棧中剩下的開頭標記都是沒有配對的，也需要移除
+        toRemoveMarkers.push(...openStack);
+        
+        // 從後往前移除不成對的標記
+        toRemoveMarkers.sort((a, b) => b.index - a.index);
+        for (const m of toRemoveMarkers) {
+            result = result.slice(0, m.index) + result.slice(m.index + m.length);
+        }
+        
+        // 第二步：處理 HTML 標籤（只處理白名單內的）
+        const skipTags = SearchResultView.SKIP_HTML_TAGS;
+        const tagRegex = new RegExp(
+            `<\\/?(${Array.from(skipTags).join('|')})(?:\\s+[^>]*)?>`,
+            'gi'
+        );
+
+        // 收集所有標籤
+        const tags = [];
+        let match;
+        tagRegex.lastIndex = 0;
+        while ((match = tagRegex.exec(result)) !== null) {
+            tags.push({
+                full: match[0],
+                name: match[1].toLowerCase(),
+                isClosing: match[0][1] === '/',
+                index: match.index
+            });
+        }
+        
+        // 用棧匹配成對的標籤
+        const stack = [];
+        const toRemove = [];
+        
+        for (const tag of tags) {
+            if (!tag.isClosing) {
+                stack.push(tag);
+            } else {
+                // 找到對應的開始標籤
+                let found = false;
+                for (let i = stack.length - 1; i >= 0; i--) {
+                    if (stack[i].name === tag.name) {
+                        // 匹配成功，移除這對
+                        stack.splice(i, 1);
+                        found = true;
+                        break;
+                    }
+                }
+                if (!found) {
+                    // 沒有匹配的開始標籤，標記這個結束標籤需要移除
+                    toRemove.push(tag);
+                }
+            }
+        }
+        
+        // 剩下的開始標籤都是沒有配對的，也需要移除
+        toRemove.push(...stack);
+        
+        // 按索引從後往前移除
+        toRemove.sort((a, b) => b.index - a.index);
+        for (const tag of toRemove) {
+            result = result.slice(0, tag.index) + result.slice(tag.index + tag.full.length);
+        }
+        
+        return result;
     }
 
     constructor(leaf, plugin) {
@@ -1105,6 +1219,9 @@ class SearchResultView extends ItemView {
         // 從原始字符串截取
         let result = lineContent.substring(leftOriginalPos, rightOriginalPos);
         
+        // 移除不成對的 HTML 標籤和自定義高亮標記
+        result = this.removeUnpairedTagsAndMarkers(result);
+        
         return result;
     }
 
@@ -1245,77 +1362,145 @@ class SearchResultView extends ItemView {
         }
         
         let visibleString = "";
-        const displayToOriginal = [];  // 顯示字符索引 -> 原始字符索引
-        const originalToDisplay = new Array(originalLine.length).fill(-1);  // 原始字符索引 -> 顯示字符索引
+        const displayToOriginal = [];
+        const originalToDisplay = new Array(originalLine.length).fill(-1);
         
+        // 狀態定義
+        const STATE = {
+            NORMAL: 0,      // 普通文本  (md語法暫時不過濾)
+            IN_TAG: 1,      // 在 HTML 標籤內
+            IN_URL: 2,      // 在鏈接 URL 內 (text](這裡)
+            IN_HTML_COMMENT: 3  // 在 HTML 註釋內 <!-- -->
+        };
+        
+        let state = STATE.NORMAL;
         let i = 0;
         const len = originalLine.length;
-        
+        let tagName = "";  // 記錄當前標籤名稱
+        let bracketDepth = 0;  // 用於處理鏈接
+
+        // 需要跳過的標籤白名單（這些標籤不佔寬度）
+        const skipTags = SearchResultView.SKIP_HTML_TAGS;
+
         while (i < len) {
             const ch = originalLine[i];
             const remaining = originalLine.substring(i);
-
-            /*
-            // 跳過 ==高亮== 中的 ==
-            if (remaining.startsWith("==")) {
-                // == 標記符，跳過，不加入 visibleString
-                i += 2;
-                continue;
-            }
             
-            // 跳過 **粗體** 中的 **
-            if (remaining.startsWith("**")) {
-                i += 2;
-                continue;
-            }
-            
-            // 跳過 *斜體* 或 _斜體_ 中的單個標記符
-            // 注意：需要區分是標記符還是普通字符（如行首列表）
-            if ((ch === '*' || ch === '_') && i + 1 < len) {
-                const nextCh = originalLine[i + 1];
-                // 簡單判斷：如果後面不是空格，且前面不是文字，則視為標記符
-                // 更精確的判斷：檢查是否有配對的結束標記
-                if (nextCh !== ' ' && (i === 0 || originalLine[i - 1] !== ' ')) {
-                    // 可能是斜體標記，跳過
-                    i += 1;
-                    continue;
-                }
-            }
-
-            // 跳過 ~~刪除線~~ 中的 ~~
-            if (remaining.startsWith("~~")) {
-                i += 2;
-                continue;
-            }
-            */
-
-            // 處理鏈接中的 (url) 部分
-            // 查找 [text](url) 結構
-            if (ch === '[') {
-                const closeBracket = originalLine.indexOf(']', i);
-                if (closeBracket !== -1 && closeBracket + 1 < len && originalLine[closeBracket + 1] === '(') {
-                    const closeParen = originalLine.indexOf(')', closeBracket + 2);
-                    if (closeParen !== -1) {
-                        // 這是完整的鏈接結構
-                        // 將 [text] 部分加入 visibleString
-                        for (let j = i; j <= closeBracket; j++) {
-                            const char = originalLine[j];
-                            visibleString += char;
-                            displayToOriginal.push(j);
-                            originalToDisplay[j] = visibleString.length - 1;
-                        }
-                        // 跳過 (url) 部分，不加入 visibleString
-                        i = closeParen + 1;
+            switch (state) {
+                case STATE.NORMAL:
+                    // 檢測 HTML 註釋開始
+                    if (ch === '<' && remaining.startsWith('<!--')) {
+                        state = STATE.IN_HTML_COMMENT;
+                        i += 4;
                         continue;
                     }
-                }
+                    
+                    // 檢測 HTML 標籤開始
+                    if (ch === '<') {
+                        // 檢查是否是結束標籤
+                        const isClosing = originalLine[i + 1] === '/';
+                        let tagStart = isClosing ? i + 2 : i + 1;
+                        let tagEnd = tagStart;
+                        
+                        // 提取標籤名稱
+                        while (tagEnd < len && /[a-zA-Z0-9]/.test(originalLine[tagEnd])) {
+                            tagEnd++;
+                        }
+                        tagName = originalLine.substring(tagStart, tagEnd).toLowerCase();
+                        
+                        // 如果標籤在白名單中，進入標籤狀態（跳過）
+                        if (skipTags.has(tagName)) {
+                            state = STATE.IN_TAG;
+                            i++;
+                            continue;
+                        }
+                    }
+                    
+                    // 檢測鏈接 URL 部分 (僅當前面有 [text] 結構時)
+                    if (ch === ']' && i + 1 < len && originalLine[i + 1] === '(') {
+                        // 找到對應的 [ 來確認是鏈接
+                        let openBracket = -1;
+                        let bracketCount = 0;
+                        for (let j = i - 1; j >= 0; j--) {
+                            if (originalLine[j] === '[' && bracketCount === 0) {
+                                openBracket = j;
+                                break;
+                            }
+                            if (originalLine[j] === ']') bracketCount++;
+                            if (originalLine[j] === '[') bracketCount--;
+                        }
+                        
+                        if (openBracket !== -1) {
+                            // 檢查前面的字符，確保是鏈接結構
+                            // 將 [text] 部分已經加入 visibleString，現在要跳過 (url) 部分
+                            state = STATE.IN_URL;
+                            bracketDepth = 1;
+                            i += 2;  // 跳過 ](
+                            continue;
+                        }
+                    }
+
+                    // 檢測自定義高亮標記 ==[ 開頭
+                    if (remaining.startsWith('==[')) {
+                        // 跳過開頭標記 ==[，不計入寬度
+                        i += 3;  // 跳過 '=', '=', '['
+                        continue;
+                    }
+
+                    // 檢測自定義高亮標記 ==\[ 開頭
+                    if (remaining.startsWith('==\\[')) {
+                        // 跳過開頭標記 ==\[，不計入寬度
+                        i += 4;  // 跳過 '=', '=', '['
+                        continue;
+                    }
+
+                    // 檢測自定義高亮標記 ]== 結尾
+                    if (ch === ']' && i + 2 < len && originalLine[i + 1] === '=' && originalLine[i + 2] === '=') {
+                        // 跳過結尾標記 ]==，不計入寬度
+                        i += 3;
+                        continue;
+                    }
+
+                    // 普通字符：加入 visibleString
+                    visibleString += ch;
+                    displayToOriginal.push(i);
+                    originalToDisplay[i] = visibleString.length - 1;
+                    i++;
+                    break;
+                    
+                case STATE.IN_TAG:
+                    // 在 HTML 標籤內，跳過所有字符
+                    if (ch === '>') {
+                        state = STATE.NORMAL;
+                    }
+                    i++;
+                    break;
+                    
+                case STATE.IN_URL:
+                    // 在鏈接 URL 內，跳過所有字符直到匹配的 )
+                    if (ch === '(') {
+                        bracketDepth++;
+                    } else if (ch === ')') {
+                        bracketDepth--;
+                        if (bracketDepth === 0) {
+                            state = STATE.NORMAL;
+                            i++;
+                            continue;
+                        }
+                    }
+                    i++;
+                    break;
+                    
+                case STATE.IN_HTML_COMMENT:
+                    // 在 HTML 註釋內，跳過所有字符
+                    if (ch === '-' && remaining.startsWith('-->')) {
+                        state = STATE.NORMAL;
+                        i += 3;
+                        continue;
+                    }
+                    i++;
+                    break;
             }
-            
-            // 普通字符：加入 visibleString
-            visibleString += ch;
-            displayToOriginal.push(i);
-            originalToDisplay[i] = visibleString.length - 1;
-            i++;
         }
         
         return { visibleString, displayToOriginal, originalToDisplay };
@@ -3287,7 +3472,7 @@ class SearchResultView extends ItemView {
 
 // ==================== 插件設置 ====================
 const DEFAULT_SETTINGS = {
-    version: "2.4.2",  // 主版本.次版本.修訂版本。版本號，用於數據遷移
+    version: "2.4.3",  // 主版本.次版本.修訂版本。版本號，用於數據遷移
 
     enableBooleanQuery: false,  // 布爾查詢默認值
     enableHtmlTagIgnore: false,     // 無視標籤默認值
