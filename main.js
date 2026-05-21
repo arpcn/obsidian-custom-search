@@ -1079,10 +1079,16 @@ class SearchResultView extends ItemView {
         // 輔助函數：判斷是否為全角字符
         const isFullwidth = (char) => {
             const code = char.charCodeAt(0);
-            // 常見全角字符範圍
-            return (code >= 0x4e00 && code <= 0x9fff) ||  // 中日韓統一表意文字
-                   (code >= 0xff00 && code <= 0xffef) ||  // 全角 ASCII
-                   (code >= 0x3000 && code <= 0x303f);     // 中日韓符號
+            // 最常見的字符優先判斷（短路優化）
+           return (code >= 0x4e00 && code <= 0x9fff) ||  // 基本區 中日韓統一表意文字（最常見）
+                  (code >= 0x3000 && code <= 0x303f) ||  // 中日韓符號（標點等）
+                  (code >= 0xff00 && code <= 0xffef) ||  // 全角 ASCII
+                  (code >= 0x3400 && code <= 0x4dbf) ||  // 擴展區 A
+                  (code >= 0x20000 && code <= 0x2a6df) || // 擴展區 B（極罕見，在下面）
+                  (code >= 0x2a700 && code <= 0x2b73f) || // 擴展區 C
+                  (code >= 0x2b740 && code <= 0x2b81f) || // 擴展區 D
+                  (code >= 0x2b820 && code <= 0x2ceaf) || // 擴展區 E
+                  (code >= 0x2ceb0 && code <= 0x2ebe0);   // 擴展區 F
         };
 
         // 輔助函數：判斷是否為窄字符（需要折算0.2單位）
