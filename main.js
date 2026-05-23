@@ -3478,7 +3478,7 @@ class SearchResultView extends ItemView {
 
 // ==================== 插件設置 ====================
 const DEFAULT_SETTINGS = {
-    version: "2.4.3",  // 主版本.次版本.修訂版本。版本號，用於數據遷移
+    version: "2.4.4",  // 主版本.次版本.修訂版本。版本號，用於數據遷移
 
     enableBooleanQuery: false,  // 布爾查詢默認值
     enableHtmlTagIgnore: false,     // 無視標籤默認值
@@ -7497,7 +7497,7 @@ T44n1851_大乘義章\\d+\\.md
                         let newName = input.value.trim() || `組${Object.keys(currentGroups).length + 1}`;
                         if (!currentGroups[newName]) {
                             currentGroups[newName] = { patterns: [] };
-                            await this.plugin.saveCustomFileGroups({ groups: currentGroups, combinations: currentCombinations, defaultPreset: currentDefaultPreset });
+                            await plugin.saveCustomFileGroups({ groups: currentGroups, combinations: currentCombinations, defaultPreset: currentDefaultPreset });
                             renderGroupsPanel();
                             renderCombinationsPanel();
                             updateItemSelect();
@@ -7685,7 +7685,7 @@ T44n1851_大乘義章\\d+\\.md
                         let newName = input.value.trim() || `組合${Object.keys(currentCombinations).length + 1}`;
                         if (!currentCombinations[newName]) {
                             currentCombinations[newName] = { groups: [] };
-                            await this.plugin.saveCustomFileGroups({ groups: currentGroups, combinations: currentCombinations, defaultPreset: currentDefaultPreset });
+                            await plugin.saveCustomFileGroups({ groups: currentGroups, combinations: currentCombinations, defaultPreset: currentDefaultPreset });
                             renderCombinationsPanel();
                             updateItemSelect();
                         }
