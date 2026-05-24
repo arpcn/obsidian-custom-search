@@ -939,6 +939,7 @@ class SearchResultView extends ItemView {
     }
 
     async onOpen() {
+        this.plugin.registerResultView(this);
         const container = this.containerEl.children[1];
         container.empty();
         container.style.padding = "10px";
@@ -1020,6 +1021,7 @@ class SearchResultView extends ItemView {
     }
 
     async onClose() {
+        this.plugin.unregisterResultView(this);
         if (this.resizeObserver) {
             this.resizeObserver.disconnect();
         }
@@ -1754,10 +1756,13 @@ class SearchResultView extends ItemView {
             // 關閉可能打開的歷史面板
             this.closeHistoryPanel();
             
+            // 動態獲取最新的 patterns（從 settings 實時讀取）
+            const dynamicPatterns = this.getCurrentPatternsTextDynamic();
+            
             // 直接使用當前搜索參數重新執行搜索
             await this.plugin.searchAndShowInSidebar(
                 this.currentSearchText,
-                this.currentPatternsText,
+                dynamicPatterns,
                 this.currentIsPreset,
                 this.currentRangeDisplay,
                 true,  // skipHistorySave = true，不保存到歷史
@@ -1781,6 +1786,9 @@ class SearchResultView extends ItemView {
         reopenBtn.onclick = async () => {
             // 關閉可能打開的歷史面板
             this.closeHistoryPanel();
+            
+            // 動態獲取最新的 patterns（從 settings 實時讀取）
+            const dynamicPatterns = this.getCurrentPatternsTextDynamic();
             
             // 構建當前搜索的歷史條目對象（用於恢復對話框）
             const currentHistoryItem = {
@@ -1811,8 +1819,8 @@ class SearchResultView extends ItemView {
                         // 降級：打開新對話框
                         const result = await this.plugin.showSearchModeDialog(
                             this.currentSearchText,
-                            this.currentPatternsText,
-                            this.currentPatternsText.includes('\n'),
+                            dynamicPatterns,
+                            dynamicPatterns.includes('\n'),
                             this.currentRangeRef,
                             this.isBooleanQuery || false,
                             this.enableDiacriticIgnore || false,
@@ -1827,8 +1835,8 @@ class SearchResultView extends ItemView {
                     // 降級：打開新對話框
                     const result = await this.plugin.showSearchModeDialog(
                         this.currentSearchText,
-                        this.currentPatternsText,
-                        this.currentPatternsText.includes('\n'),
+                        dynamicPatterns,
+                        dynamicPatterns.includes('\n'),
                         this.currentRangeRef,
                         this.isBooleanQuery || false,
                         this.enableDiacriticIgnore || false,
@@ -1843,9 +1851,9 @@ class SearchResultView extends ItemView {
             
             // 對話框不存在：打開新對話框並恢復狀態
             const searchTextToPass = this.currentSearchText;
-            const patternsToPass = this.currentPatternsText;
+            const patternsToPass = dynamicPatterns;
             const isPresetToPass = this.currentIsPreset;
-            
+
             // 判斷是否為預定範圍：如果是預定範圍，不填充文件名編輯區；否則填充
             const isDefaultRange = (this.currentRangeRef && this.currentRangeRef.type === "default");
             let previousFileNameToPass = "";
@@ -3400,6 +3408,42 @@ class SearchResultView extends ItemView {
         return navContainer;
     }
 
+    // 動態獲取當前範圍的 patterns 文本（從 settings 實時讀取，而非使用快照）
+    getCurrentPatternsTextDynamic() {
+        const ref = this.currentRangeRef;
+        if (!ref) return this.currentPatternsText;
+        
+        // 預定範圍：從 settings 讀取
+        if (ref.type === 'default') {
+            return this.plugin.settings.defaultFilePatterns?.join('\n') || '';
+        }
+        
+        // 文件組（未修改，即 patternsText 為 null）
+        if (ref.type === 'group' && !ref.patternsText) {
+            const group = this.plugin.settings.fileGroups?.groups?.[ref.name];
+            return group?.patterns?.join('\n') || '';
+        }
+        
+        // 組合（未修改，即 patternsText 為 null）
+        if (ref.type === 'combination' && !ref.patternsText) {
+            const combo = this.plugin.settings.fileGroups?.combinations?.[ref.name];
+            if (combo && combo.groups) {
+                const allPatterns = [];
+                for (const groupName of combo.groups) {
+                    const group = this.plugin.settings.fileGroups?.groups?.[groupName];
+                    if (group && group.patterns) {
+                        allPatterns.push(...group.patterns);
+                    }
+                }
+                return allPatterns.join('\n');
+            }
+            return '';
+        }
+        
+        // 修改版或自定義範圍：返回保存的快照
+        return this.currentPatternsText;
+    }
+
     updateResults(searchText, results, isRegexContent = false, statsText = "", patternsArray = [], patternsText = "", isPreset = false, rangeDisplay = "", rangeRef = null, isBooleanQuery = false, highlightRegex = null, enableDiacriticIgnore = false, enableHtmlTagIgnore = false) {
         this.currentSearchText = searchText;
         this.currentPatterns = patternsArray; // 保存模式數組
@@ -3478,7 +3522,7 @@ class SearchResultView extends ItemView {
 
 // ==================== 插件設置 ====================
 const DEFAULT_SETTINGS = {
-    version: "2.4.4",  // 主版本.次版本.修訂版本。版本號，用於數據遷移
+    version: "2.4.5",  // 主版本.次版本.修訂版本。版本號，用於數據遷移
 
     enableBooleanQuery: false,  // 布爾查詢默認值
     enableHtmlTagIgnore: false,     // 無視標籤默認值
@@ -4086,7 +4130,8 @@ class HandwriteQueryModal extends Modal {
 class CustomSearchPlugin extends Plugin {
     async onload() {
         console.log("載入custom-search插件");
-        this.currentModal = null; 
+        this.currentModal = null;
+        this.currentResultView = null;
 
         await this.loadSettings();
 
@@ -4186,6 +4231,18 @@ class CustomSearchPlugin extends Plugin {
             if (s) s.remove();
         });
 
+    }
+
+    // 註冊當前結果視圖
+    registerResultView(view) {
+        this.currentResultView = view;
+    }
+
+    // 註銷當前結果視圖
+    unregisterResultView(view) {
+        if (this.currentResultView === view) {
+            this.currentResultView = null;
+        }
     }
 
     // 配置重置
@@ -6980,9 +7037,130 @@ T44n1851_大乘義章\\d+\\.md
             customFileBtn.onclick = async () => {
                 if (patternTooltip) patternTooltip.remove();
                 const currentSearchText = searchTextInput.value.trim();
-                const result = await this.showCustomFileGroupsDialog(selectedText, currentSearchText || selectedText);
+                // 傳入當前主窗口引用的範圍，用於判斷是否需要刷新
+                const currentRangeForDialog = (() => {
+                    if (customButtonState.active && customButtonState.rangeName) {
+                        const type = customButtonState.rangeType === '文件組' ? 'group' : 'combination';
+                        return { type: type, name: customButtonState.rangeName };
+                    }
+                    return { type: 'default', name: null };
+                })();
+                const result = await this.showCustomFileGroupsDialog(selectedText, currentSearchText || selectedText, currentRangeForDialog);
                 if (result) {
                     if (result.action === 'closed') {
+                        // 如果當前引用的範圍被修改了，刷新編輯區
+                        if (result.needRefresh && currentRangeForDialog) {
+                            if (currentRangeForDialog.type === 'group') {
+                                const groups = this.settings.fileGroups?.groups || {};
+                                const group = groups[currentRangeForDialog.name];
+                                if (group && group.patterns) {
+                                    const newPatternsText = group.patterns.join('\n');
+                                    if (multiLineTextarea.style.display === 'block') {
+                                        multiLineTextarea.value = newPatternsText;
+                                        autoResizeTextarea();
+                                    } else {
+                                        singleLineInput.value = newPatternsText;
+                                    }
+                                    if (customButtonState.active && customButtonState.rangeName === currentRangeForDialog.name) {
+                                        customButtonState.originalPatternsRaw = newPatternsText;
+                                        customButtonState.isModified = false;
+                                        updateCustomButtonState(customButtonState);
+                                    }
+                                    // 創建或更新 pendingRangeInfo
+                                    const originalPatterns = group.patterns.map(p => new RegExp(p));
+                                    this.pendingRangeInfo = {
+                                        name: currentRangeForDialog.name,
+                                        type: 'group',
+                                        rangeType: '文件組',
+                                        originalPatterns: originalPatterns
+                                    };
+                                    // new Notice(`✅ 已更新「${currentRangeForDialog.name}」的內容`);
+                                }
+                            } else if (currentRangeForDialog.type === 'combination') {
+                                const combinations = this.settings.fileGroups?.combinations || {};
+                                const combo = combinations[currentRangeForDialog.name];
+                                if (combo && combo.groups) {
+                                    const groups = this.settings.fileGroups?.groups || {};
+                                    const allPatterns = [];
+                                    for (const groupName of combo.groups) {
+                                        const group = groups[groupName];
+                                        if (group && group.patterns) {
+                                            allPatterns.push(...group.patterns);
+                                        }
+                                    }
+                                    const newPatternsText = allPatterns.join('\n');
+                                    if (multiLineTextarea.style.display === 'block') {
+                                        multiLineTextarea.value = newPatternsText;
+                                        autoResizeTextarea();
+                                    } else {
+                                        singleLineInput.value = newPatternsText;
+                                    }
+                                    if (customButtonState.active && customButtonState.rangeName === currentRangeForDialog.name) {
+                                        customButtonState.originalPatternsRaw = newPatternsText;
+                                        customButtonState.isModified = false;
+                                        updateCustomButtonState(customButtonState);
+                                    }
+                                    // 創建或更新 pendingRangeInfo
+                                    const originalPatterns = allPatterns.map(p => new RegExp(p));
+                                    this.pendingRangeInfo = {
+                                        name: currentRangeForDialog.name,
+                                        type: 'combination',
+                                        rangeType: '組合',
+                                        originalPatterns: originalPatterns
+                                    };
+                                    // new Notice(`✅ 已更新「${currentRangeForDialog.name}」的內容`);
+                                }
+                            } else if (currentRangeForDialog.type === 'default') {
+                                const newPatternsText = this.settings.defaultFilePatterns?.join('\n') || '';
+                                if (multiLineTextarea.style.display === 'block') {
+                                    multiLineTextarea.value = newPatternsText;
+                                    autoResizeTextarea();
+                                } else {
+                                    singleLineInput.value = newPatternsText;
+                                }
+                                // new Notice(`✅ 已更新預定範圍的內容`);
+                            }
+                        }
+                        // 處理重命名：如果當前引用的範圍被重命名了，更新 customButtonState
+                        if (result.renamedItem && customButtonState.active && 
+                            customButtonState.rangeName === result.renamedItem.oldName &&
+                            ((result.renamedItem.type === 'group' && customButtonState.rangeType === '文件組') ||
+                             (result.renamedItem.type === 'combination' && customButtonState.rangeType === '組合'))) {
+                            // 更新 customButtonState 中的名稱
+                            customButtonState.rangeName = result.renamedItem.newName;
+                            
+                            // 獲取新組/組合的原始 patterns（復用已有函數）
+                            const data = getGroupPatternsData(result.renamedItem.newName, result.renamedItem.type);
+                            const newOriginalPatterns = data ? data.patternsText : '';
+                            
+                            customButtonState.originalPatternsRaw = newOriginalPatterns;
+                            
+                            // 比較當前編輯區內容與新組原始 patterns 是否一致
+                            const currentText = multiLineTextarea.style.display === 'block' ? multiLineTextarea.value : singleLineInput.value;
+                            const isMatch = compareWithOriginal(currentText, newOriginalPatterns);
+                            customButtonState.isModified = !isMatch;
+                            updateCustomButtonState(customButtonState);
+                            
+                            // 更新按鈕顯示
+                            if (customLeftButtonRef) {
+                                const modifiedText = customButtonState.isModified ? "(已修改)" : "(未修改)";
+                                customLeftButtonRef.innerHTML = `<div><div style="font-weight: 600;">🔍 自定義範圍 📌</div><div style="font-size: 12px;">已應用：${customButtonState.rangeName}${modifiedText}</div><div style="font-size: 11px;">在文件名匹配任一行的文件中搜索</div></div>`;
+                            }
+                            
+                            // 更新或創建 pendingRangeInfo（用於提交時保留組名信息）
+                            if (this.pendingRangeInfo && this.pendingRangeInfo.name === result.renamedItem.oldName) {
+                                this.pendingRangeInfo.name = result.renamedItem.newName;
+                            } else if (!this.pendingRangeInfo && customButtonState.active) {
+                                this.pendingRangeInfo = {
+                                    name: customButtonState.rangeName,
+                                    type: customButtonState.rangeType === '文件組' ? 'group' : 'combination',
+                                    rangeType: customButtonState.rangeType,
+                                    originalPatterns: data ? data.originalPatterns : []
+                                };
+                            }
+                            // 更新下拉框
+                            updateGroupSelect();
+                        }
                         await updatePresetButtonAppearance();
                         return;
                     } else if (result.action === 'apply_to_custom') {
@@ -7091,9 +7269,12 @@ T44n1851_大乘義章\\d+\\.md
     }
 
     // 顯示自定義文件組彈窗
-    async showCustomFileGroupsDialog(selectedText, currentSearchText = null) {
+    async showCustomFileGroupsDialog(selectedText, currentSearchText = null, currentRangeRef = null) {
         const effectiveSearchText = currentSearchText !== null ? currentSearchText : selectedText;
         const plugin = this;
+        plugin._dialogTargetRangeRef = currentRangeRef;
+        plugin._dialogTargetModified = false;
+        plugin._dialogRenamedItem = null;
         let storageData = await this.loadCustomFileGroups();
         let groups = storageData.groups || {};
         let combinations = storageData.combinations || {};
@@ -7203,6 +7384,10 @@ T44n1851_大乘義章\\d+\\.md
                 if (validPatterns.length > 0) {
                     this.settings.defaultFilePatterns = validPatterns;
                     await this.saveSettings();
+                    // 檢查是否修改了當前主窗口引用的預定範圍
+                    if (plugin._dialogTargetRangeRef && plugin._dialogTargetRangeRef.type === 'default') {
+                        plugin._dialogTargetModified = true;
+                    }
                     this.filePatterns = validPatterns.map(p => new RegExp(p));
                     this.patternStrings = this.filePatterns.map(p => p.source);
                     new Notice(`已保存 ${validPatterns.length} 個模式到預定範圍`);
@@ -7281,6 +7466,22 @@ T44n1851_大乘義章\\d+\\.md
                     if (currentDefaultPreset && currentDefaultPreset.type === 'group' && currentDefaultPreset.name === oldName) {
                         currentDefaultPreset.name = newName;
                     }
+                    
+                    // 更新當前結果視圖中的引用
+                    const currentView = plugin.currentResultView;
+                    if (currentView && currentView.currentRangeRef && 
+                        currentView.currentRangeRef.type === 'group' && 
+                        currentView.currentRangeRef.name === oldName) {
+                        currentView.currentRangeRef.name = newName;
+                        if (currentView.currentRangeDisplay) {
+                            currentView.currentRangeDisplay = currentView.currentRangeDisplay.replace(oldName, newName);
+                        }
+                    }
+                    plugin._dialogRenamedItem = { type: 'group', oldName: oldName, newName: newName };
+                    // 檢查是否重命名了當前主窗口引用的文件組
+                    if (plugin._dialogTargetRangeRef && plugin._dialogTargetRangeRef.type === 'group' && plugin._dialogTargetRangeRef.name === oldName) {
+                        plugin._dialogTargetModified = true;
+                    }
                 } else if (type === 'combination') {
                     // 獲取原始順序
                     const comboNames = Object.keys(currentCombinations);
@@ -7298,6 +7499,21 @@ T44n1851_大乘義章\\d+\\.md
                     // 更新默認預定範圍
                     if (currentDefaultPreset && currentDefaultPreset.type === 'combination' && currentDefaultPreset.name === oldName) {
                         currentDefaultPreset.name = newName;
+                    }
+                    // 更新當前結果視圖中的引用
+                    const currentView = plugin.currentResultView;
+                    if (currentView && currentView.currentRangeRef && 
+                        currentView.currentRangeRef.type === 'combination' && 
+                        currentView.currentRangeRef.name === oldName) {
+                        currentView.currentRangeRef.name = newName;
+                        if (currentView.currentRangeDisplay) {
+                            currentView.currentRangeDisplay = currentView.currentRangeDisplay.replace(oldName, newName);
+                        }
+                    }
+                    plugin._dialogRenamedItem = { type: 'combination', oldName: oldName, newName: newName };
+                    // 檢查是否重命名了當前主窗口引用的組合
+                    if (plugin._dialogTargetRangeRef && plugin._dialogTargetRangeRef.type === 'combination' && plugin._dialogTargetRangeRef.name === oldName) {
+                        plugin._dialogTargetModified = true;
                     }
                 }
                 
@@ -7333,7 +7549,7 @@ T44n1851_大乘義章\\d+\\.md
                 renderCombinationsPanel();
                 updateItemSelect();
                 
-                new Notice(`已將「${oldName}」改名為「${newName}」`);
+                // new Notice(`已將「${oldName}」改名為「${newName}」`);
             };
 
             const renderGroupsPanel = () => {
@@ -7448,6 +7664,10 @@ T44n1851_大乘義章\\d+\\.md
                             if (trimmed.startsWith('#') && !trimmed.startsWith('\\#')) return false;
                             return true;
                         });
+                        // 檢查是否修改了當前主窗口引用的文件組
+                        if (plugin._dialogTargetRangeRef && plugin._dialogTargetRangeRef.type === 'group' && plugin._dialogTargetRangeRef.name === groupName) {
+                            plugin._dialogTargetModified = true;
+                        }
                         await plugin.saveCustomFileGroups({ groups: currentGroups, combinations: currentCombinations, defaultPreset: currentDefaultPreset });
                         renderCombinationsPanel();
                     });
@@ -7605,12 +7825,17 @@ T44n1851_大乘義章\\d+\\.md
                         }
                         // 為每個刪除按鈕綁定事件
                         selectedGroupsDisplay.querySelectorAll('.remove-group').forEach(el => {
-                            el.onclick = (e) => {
+                            el.onclick = async (e) => {
                                 e.stopPropagation();
                                 const groupToRemove = el.getAttribute('data-group');
                                 combo.groups = combo.groups.filter(g => g !== groupToRemove);
                                 updateSelectedDisplay();
                                 updateGroupSelect();
+                                // 檢查是否修改了當前主窗口引用的組合
+                                if (plugin._dialogTargetRangeRef && plugin._dialogTargetRangeRef.type === 'combination' && plugin._dialogTargetRangeRef.name === comboName) {
+                                    plugin._dialogTargetModified = true;
+                                }
+                                await plugin.saveCustomFileGroups({ groups: currentGroups, combinations: currentCombinations, defaultPreset: currentDefaultPreset });
                             };
                         });
                     };
@@ -7632,7 +7857,7 @@ T44n1851_大乘義章\\d+\\.md
                     
                     const addToComboBtn = document.createElement('button');
                     addToComboBtn.textContent = '+ 添加';
-                    addToComboBtn.onclick = (e) => {
+                    addToComboBtn.onclick = async (e) => {
                         e.stopPropagation();
                         const selectedGroup = groupSelect.value;
                         if (selectedGroup) {
@@ -7640,6 +7865,11 @@ T44n1851_大乘義章\\d+\\.md
                             combo.groups.push(selectedGroup);
                             updateSelectedDisplay();
                             updateGroupSelect();
+                            // 檢查是否修改了當前主窗口引用的組合
+                            if (plugin._dialogTargetRangeRef && plugin._dialogTargetRangeRef.type === 'combination' && plugin._dialogTargetRangeRef.name === comboName) {
+                                plugin._dialogTargetModified = true;
+                            }
+                            await plugin.saveCustomFileGroups({ groups: currentGroups, combinations: currentCombinations, defaultPreset: currentDefaultPreset });
                         }
                     };
                     addRow.appendChild(groupSelect);
@@ -7781,7 +8011,9 @@ T44n1851_大乘義章\\d+\\.md
                     searchText: effectiveSearchText,
                     rangeName: name,
                     rangeType: rangeType,
-                    originalPatterns: patternsArray.map(p => new RegExp(p))
+                    originalPatterns: patternsArray.map(p => new RegExp(p)),
+                    needRefresh: plugin._dialogTargetModified,
+                    renamedItem: plugin._dialogRenamedItem
                 });
             };
             secondRow.appendChild(applyToCustomBtn);
@@ -7810,7 +8042,7 @@ T44n1851_大乘義章\\d+\\.md
                 const searchQuery = buildNativeSearchQuery(effectiveSearchText, patternsText, false);
                 if (!searchQuery) { new Notice('無法生成搜索查詢'); return; }
                 modal.remove();
-                resolve({ action: 'write_to_handwrite', query: searchQuery, searchText: effectiveSearchText, patternsText: patternsText });
+                resolve({ action: 'write_to_handwrite', query: searchQuery, searchText: effectiveSearchText, patternsText: patternsText, needRefresh: plugin._dialogTargetModified, renamedItem: plugin._dialogRenamedItem });
             };
             secondRow.appendChild(writeToHandwriteBtn);
             actionContainer.appendChild(secondRow);
@@ -7818,7 +8050,7 @@ T44n1851_大乘義章\\d+\\.md
             const closeBtn = document.createElement('button');
             closeBtn.textContent = '關閉';
             closeBtn.style.cssText = `width: 100%; padding: 6px; background: transparent; border: 1px solid var(--background-modifier-border); border-radius: 6px; cursor: pointer;`;
-            closeBtn.onclick = () => { modal.remove(); resolve({ action: 'closed' }); };
+            closeBtn.onclick = () => { modal.remove(); resolve({ action: 'closed', needRefresh: plugin._dialogTargetModified, renamedItem: plugin._dialogRenamedItem }); };
             actionContainer.appendChild(closeBtn);
             
             modal.appendChild(actionContainer);
