@@ -1660,7 +1660,7 @@ class SearchResultView extends ItemView {
 
         // 按鈕行
         const buttonRow = fixedHeader.createEl("div", { 
-            attr: { style: "display: flex; align-items: center; gap: 12px;" } 
+            attr: { style: "display: flex; align-items: center; gap: 4px;" } 
         });
 
         // 添加歷史導航按鈕組（← → 箭頭）
@@ -1807,8 +1807,7 @@ class SearchResultView extends ItemView {
             <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                 <line x1="12" y1="19" x2="12" y2="5"></line>
                 <polyline points="5 12 12 5 19 12"></polyline>
-            </svg>
-            <span>Top</span>`;
+            </svg>`;
 
         // ===== 滾動區域（獨立滾動）=====
         const scrollArea = container.createEl("div", { 
@@ -1839,14 +1838,14 @@ class SearchResultView extends ItemView {
             <span>搜索結果：「${this.currentSearchText}」${modeHint}</span>`;
 
         // 統計信息 - 使用 muted 顏色（更淡），添加重新搜索按鈕
-        let statsDiv = scrollArea.createDiv({ attr: { style: "display: flex; align-items: center; justify-content: space-between; gap: 6px; font-size: 11px; color: var(--text-muted); margin-bottom: 6px;" } });
+        let statsDiv = scrollArea.createDiv({ attr: { style: "display: flex; align-items: center; justify-content: space-between; gap: 2px; font-size: 11px; color: var(--text-muted); margin-bottom: 6px;" } });
         
         // 左側：統計信息（使用類名以便更新）
-        const statsLeft = statsDiv.createDiv({ attr: { class: "custom-search-top-stats", style: "display: flex; align-items: center; gap: 6px; flex-wrap: wrap;" } });
+        const statsLeft = statsDiv.createDiv({ attr: { class: "custom-search-top-stats", style: "display: flex; align-items: center; gap: 2px; flex-wrap: wrap;" } });
         
         // 原有的範圍和文件統計
         const rangeStatsSpan = document.createElement("span");
-        rangeStatsSpan.style.cssText = "display: flex; align-items: center; gap: 6px;";
+        rangeStatsSpan.style.cssText = "display: flex; align-items: center; gap: 2px;";
         rangeStatsSpan.innerHTML = `
             <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="20" x2="12" y2="10"></line><line x1="18" y1="20" x2="18" y2="4"></line><line x1="6" y1="20" x2="6" y2="16"></line></svg>
             <span>${this.statsText}(${new Set(this.currentResults.map(r => r.file)).size})</span>`;
@@ -1855,7 +1854,7 @@ class SearchResultView extends ItemView {
         // 分隔符
         const separator = document.createElement("span");
         separator.textContent = "|";
-        separator.style.cssText = "color: var(--text-faint); margin: 0 4px;";
+        separator.style.cssText = "color: var(--text-faint); margin: 0;";
         statsLeft.appendChild(separator);
         
         // 分頁統計
@@ -1917,7 +1916,7 @@ class SearchResultView extends ItemView {
                 title: "使用當前搜索方式重新打開面板"
             }
         });
-        reopenBtn.innerHTML = `<span>重新搜索</span>`;
+        reopenBtn.innerHTML = `<span>重搜</span>`;
 
         // 綁定重新搜索按鈕事件
         reopenBtn.onclick = async () => {
@@ -2137,11 +2136,11 @@ class SearchResultView extends ItemView {
         if (titleSpan) {
             const fileName = file.split('/').pop().replace(/\.md$/, '');
             if (loadedInFile < totalInFile) {
-                titleSpan.textContent = `📄 ${fileName} (顯示 ${loadedInFile}/${totalInFile})`;
+                titleSpan.textContent = `📄 ${fileName} (顯示${loadedInFile}/${totalInFile})`;
             } else if (isCollapsed) {
-                titleSpan.textContent = `📄 ${fileName} (共 ${totalInFile} 條，折疊)`;
+                titleSpan.textContent = `📄 ${fileName} (折疊${totalInFile}條)`;
             } else {
-                titleSpan.textContent = `📄 ${fileName} (共 ${totalInFile} 條)`;
+                titleSpan.textContent = `📄 ${fileName} (${totalInFile}條)`;
             }
         }
         
@@ -2396,24 +2395,32 @@ class SearchResultView extends ItemView {
         
         // 更新統計文本
         if (loadedInFile < totalInFile) {
-            titleSpan.textContent = `📄 ${fileName} (顯示 ${loadedInFile}/${totalInFile})`;
+            titleSpan.textContent = `📄 ${fileName} (顯示${loadedInFile}/${totalInFile})`;
         } else if (isCollapsed) {
-            titleSpan.textContent = `📄 ${fileName} (共 ${totalInFile} 條，折疊)`;
+            titleSpan.textContent = `📄 ${fileName} (折疊${totalInFile}條)`;
         } else {
-            titleSpan.textContent = `📄 ${fileName} (共 ${totalInFile} 條)`;
+            titleSpan.textContent = `📄 ${fileName} (${totalInFile}條)`;
         }
-        
+
         // 右側按鈕容器
         const headerRightContainer = fileHeader.createEl("div", {
             attr: { style: "display: inline-flex; align-items: center; gap: 4px; margin-left: auto; position: relative;" }
         });
+
+        // 模式控制按鈕容器
+        const modeControlContainer = headerRightContainer.createEl("div", {
+            attr: { style: "display: inline-flex; align-items: center; gap: 4px; position: relative;" }
+        });
         
+        // 創建模式控制按鈕
+        await this.createFileModeControlsForFile(filePath, fileResults, fileContent, fileSection, fileHeader, modeControlContainer);
+
         // 折疊按鈕
         const collapseBtn = headerRightContainer.createEl("button", {
             text: isCollapsed ? '▶' : '▼',
             attr: { 
                 class: "file-collapse-btn",
-                style: "padding: 2px 6px; font-size: 11px; border-radius: 4px; cursor: pointer; background: var(--background-secondary); border: 1px solid var(--background-modifier-border); line-height: 1;",
+                style: "padding: 2px 4px; font-size: 9px; border-radius: 4px; cursor: pointer; background: var(--background-secondary); border: 1px solid var(--background-modifier-border); line-height: 1;",
                 title: isCollapsed ? '展開' : '折疊'
             }
         });
@@ -2423,15 +2430,7 @@ class SearchResultView extends ItemView {
             const itemsContainer = fileSection.querySelector('.file-items-container');
             await this.toggleFileCollapse(filePath, fileSection, fileContent, itemsContainer);
         };
-        
-        // 模式控制按鈕容器
-        const modeControlContainer = headerRightContainer.createEl("div", {
-            attr: { style: "display: inline-flex; align-items: center; gap: 4px; position: relative;" }
-        });
-        
-        // 創建模式控制按鈕
-        await this.createFileModeControlsForFile(filePath, fileResults, fileContent, fileSection, fileHeader, modeControlContainer);
-        
+
         // 條目容器
         const itemsContainer = fileSection.createEl("div", { 
             attr: { 
@@ -2457,8 +2456,8 @@ class SearchResultView extends ItemView {
         await this.refreshFileSection(file, items, fileContent, fileSection, fileHeader);
         
         // 顯示提示反饋
-        const modeName = mode === 'A' ? '單行模式' : (mode === 'B' ? '3行+滾動模式' : '完全展開模式');
-        new Notice(`已將「${file.split('/').pop()}」下所有結果切換為 ${modeName}`);
+        // const modeName = mode === 'A' ? '單行模式' : (mode === 'B' ? '3行+滾動模式' : '完全展開模式');
+        // new Notice(`已將「${file.split('/').pop()}」下所有結果切換為 ${modeName}`);
     }
 
     // 渲染每個條目的內容
@@ -4391,11 +4390,11 @@ class SearchResultView extends ItemView {
                     if (titleSpan) {
                         let displayText = `📄 ${filePath.split('/').pop().replace(/\.md$/, '')}`;
                         if (loadedInFile < totalInFile) {
-                            titleSpan.textContent = `${displayText} (顯示 ${loadedInFile}/${totalInFile})`;
+                            titleSpan.textContent = `${displayText} (顯示${loadedInFile}/${totalInFile})`;
                         } else if (isCollapsed) {
-                            titleSpan.textContent = `${displayText} (共 ${totalInFile} 條，折疊)`;
+                            titleSpan.textContent = `${displayText} (折疊${totalInFile}條)`;
                         } else {
-                            titleSpan.textContent = `${displayText} (共 ${totalInFile} 條)`;
+                            titleSpan.textContent = `${displayText} (${totalInFile}條)`;
                         }
                     }
                     
