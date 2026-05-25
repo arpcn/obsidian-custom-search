@@ -924,6 +924,14 @@ class SearchResultView extends ItemView {
         // 歷史導航屬性
         this.historyLongPressTimer = null;     // 長按計時器
         this.isLongPressTriggered = false;     // 是否已觸發長按
+
+        // 分頁和折疊屬性
+        this.loadedCount = 0;                  // 已掃描到的全局結果位置（包括跳過的折疊文件）
+        this.allSortedResults = [];             // 所有排序後的結果（緩存）
+        this.fileCollapsedState = new Map();    // 文件路徑 -> 是否折疊
+        this.isLoadingMore = false;             // 防止重複加載
+        this.loadMoreBtn = null;                // 加載更多按鈕的引用
+        this.lastValidWidth = null;  // 記錄上次有效寬度，用於避免0→原值的無意義重建
     }
 
     getViewType() {
@@ -1006,8 +1014,25 @@ class SearchResultView extends ItemView {
     calculateCharWidth(container) {
         if (!container || !this.measureElement) return;
         const panelRect = container.getBoundingClientRect();
-        if (panelRect.width === this.panelWidth) return;
-        this.panelWidth = panelRect.width;
+        const newWidth = panelRect.width;
+        
+        // 寬度為0時：記錄但不觸發重建（側邊欄折疊狀態）
+        if (newWidth === 0) {
+            // 不更新 panelWidth，也不觸發重建
+            return;
+        }
+        
+        // 寬度大於0時：與上次有效寬度比較
+        if (newWidth === this.lastValidWidth) {
+            // 寬度沒變（例如從0恢復到原值），無需重建
+            return;
+        }
+        
+        // 寬度發生了實質性變化（用戶拖動了邊欄）
+        if (newWidth === this.panelWidth) return;
+        
+        this.panelWidth = newWidth;
+        this.lastValidWidth = newWidth;
         
         // 測量一個中文字符的寬度
         this.measureElement.textContent = '中';
@@ -1015,8 +1040,7 @@ class SearchResultView extends ItemView {
         this.charWidth = charRect.width;
         
         if (this.panelWidth > 0 && this.charWidth > 0) {
-            // 重新渲染以應用新的截取
-            this.refreshDisplay();
+            this.refreshDisplay();  // 這裡會由 refreshDisplay 內部判斷模式決定是否重建
         }
     }
 
@@ -1058,13 +1082,26 @@ class SearchResultView extends ItemView {
         }
     }
 
-    async refreshDisplay() {
+    async refreshDisplay(forceRebuild = false) {
         if (this.isRendering) return;
         const container = this.containerEl.children[1];
         if (container && this.currentResults.length > 0) {
-            await this.renderResults(container);
-            // 重新渲染後更新可聚焦項目
-            this.updateFocusableItems();
+            // 判斷是否需要重建：
+            // 1. 強制重建（模式切換時）
+            // 2. A模式下寬度變化需要重新計算截取
+            const needsRebuild = forceRebuild || (this.globalMode === 'A');
+            
+            if (needsRebuild) {
+                // 模式切換時處理批次大小變化
+                const newBatchSize = this.getBatchSizeByMode();
+                if (newBatchSize < this.loadedCount) {
+                    this.loadedCount = newBatchSize;
+                }
+                await this.renderResults(container);
+                // 重新渲染後更新可聚焦項目
+                this.updateFocusableItems();
+            }
+            // B/C模式下寬度變化：無需任何操作，直接返回
         }
     }
 
@@ -1677,18 +1714,91 @@ class SearchResultView extends ItemView {
                 }
             });
             btn.onclick = async () => {
+                const oldBatchSize = this.getBatchSizeByMode();
                 this.globalMode = key;
                 this.itemModes.clear();
                 this.plugin.settings.defaultDisplayMode = key;
                 await this.plugin.saveSettings();
-                this.refreshDisplay();
+                
+                // 模式切換時處理批次大小變化
+                const newBatchSize = this.getBatchSizeByMode();
+                if (newBatchSize < this.loadedCount) {
+                    this.loadedCount = newBatchSize;
+                }
+                this.refreshDisplay(true); // 模式切換時強制重建
             };
         }
+
+        // 全部折疊按鈕
+        const collapseAllBtn = buttonRow.createEl("button", {
+            attr: { 
+                style: "padding: 2px 6px; font-size: 11px; border-radius: 4px; cursor: pointer; background: var(--background-secondary); border: 1px solid var(--background-modifier-border); margin-left: auto; display: inline-flex; align-items: center; gap: 2px;",
+                title: "折疊所有已加載的文件"
+            }
+        });
+        collapseAllBtn.innerHTML = `<span>▶</span>`;
+        collapseAllBtn.onclick = async () => {
+            // 遍歷所有已加載的文件，設置為折疊狀態
+            const fileSections = document.querySelectorAll('.file-section');
+            for (const fileSection of fileSections) {
+                const filePath = fileSection.getAttribute('data-file-path');
+                if (filePath && !this.fileCollapsedState.get(filePath)) {
+                    this.fileCollapsedState.set(filePath, true);
+                    const itemsContainer = fileSection.querySelector('.file-items-container');
+                    if (itemsContainer) {
+                        itemsContainer.style.display = 'none';
+                    }
+                    // 更新折疊按鈕圖標
+                    const collapseBtn = fileSection.querySelector('.file-collapse-btn');
+                    if (collapseBtn) {
+                        collapseBtn.textContent = '▶';
+                        collapseBtn.title = '展開';
+                    }
+                }
+            }
+            // 更新文件頭統計
+            this.updateAllFileHeaders(document.querySelector('.custom-search-content-area'));
+            this.updateTopStats(container);
+            this.updateFocusableItems();
+        };
+
+        // 全部展開按鈕
+        const expandAllBtn = buttonRow.createEl("button", {
+            attr: { 
+                style: "padding: 2px 6px; font-size: 11px; border-radius: 4px; cursor: pointer; background: var(--background-secondary); border: 1px solid var(--background-modifier-border); display: inline-flex; align-items: center; gap: 2px;",
+                title: "展開所有已加載的文件"
+            }
+        });
+        expandAllBtn.innerHTML = `<span>▼</span>`;
+        expandAllBtn.onclick = async () => {
+            // 遍歷所有已加載的文件，設置為展開狀態
+            const fileSections = document.querySelectorAll('.file-section');
+            for (const fileSection of fileSections) {
+                const filePath = fileSection.getAttribute('data-file-path');
+                if (filePath && this.fileCollapsedState.get(filePath)) {
+                    this.fileCollapsedState.set(filePath, false);
+                    const itemsContainer = fileSection.querySelector('.file-items-container');
+                    if (itemsContainer) {
+                        itemsContainer.style.display = 'block';
+                    }
+                    // 更新折疊按鈕圖標
+                    const collapseBtn = fileSection.querySelector('.file-collapse-btn');
+                    if (collapseBtn) {
+                        collapseBtn.textContent = '▼';
+                        collapseBtn.title = '折疊';
+                    }
+                }
+            }
+            // 更新文件頭統計
+            this.updateAllFileHeaders(document.querySelector('.custom-search-content-area'));
+            this.updateTopStats(container);
+            this.updateFocusableItems();
+        };
 
         // Top 按鈕
         const topBtn = buttonRow.createEl("button", {
             attr: { 
-                style: "padding: 2px 4px; font-size: 11px; color: rgba(150, 150, 150, 50); border-radius: 4px; cursor: pointer; background: rgba(251, 251, 251, 0); border: 1px solid rgba(251, 251, 251, 0); margin-left: auto; display: inline-flex; align-items: center; gap: 2px;"
+                style: "padding: 2px 4px; font-size: 11px; color: rgba(150, 150, 150, 50); border-radius: 4px; cursor: pointer; background: rgba(251, 251, 251, 0); border: 1px solid rgba(251, 251, 251, 0); display: inline-flex; align-items: center; gap: 2px;"
             }
         });
 
@@ -1700,10 +1810,10 @@ class SearchResultView extends ItemView {
             </svg>
             <span>Top</span>`;
 
-
         // ===== 滾動區域（獨立滾動）=====
         const scrollArea = container.createEl("div", { 
             attr: { 
+                class: "custom-search-scroll-area",
                 style: "flex: 1; overflow-y: auto; overflow-x: hidden; margin-top: 12px; padding: 10px;"
             } 
         });
@@ -1731,12 +1841,39 @@ class SearchResultView extends ItemView {
         // 統計信息 - 使用 muted 顏色（更淡），添加重新搜索按鈕
         let statsDiv = scrollArea.createDiv({ attr: { style: "display: flex; align-items: center; justify-content: space-between; gap: 6px; font-size: 11px; color: var(--text-muted); margin-bottom: 6px;" } });
         
-        // 左側：統計信息
-        const statsLeft = statsDiv.createDiv({ attr: { style: "display: flex; align-items: center; gap: 6px;" } });
-        statsLeft.innerHTML = `
-            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="20" x2="12" y2="10"></line><line x1="18" y1="20" x2="18" y2="4"></line><line x1="6" y1="20" x2="6" y2="16"></line></svg>
-            <span>${this.statsText}(匹配${new Set(this.currentResults.map(r => r.file)).size})個，${this.currentResults.length}處</span>`;
+        // 左側：統計信息（使用類名以便更新）
+        const statsLeft = statsDiv.createDiv({ attr: { class: "custom-search-top-stats", style: "display: flex; align-items: center; gap: 6px; flex-wrap: wrap;" } });
         
+        // 原有的範圍和文件統計
+        const rangeStatsSpan = document.createElement("span");
+        rangeStatsSpan.style.cssText = "display: flex; align-items: center; gap: 6px;";
+        rangeStatsSpan.innerHTML = `
+            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="20" x2="12" y2="10"></line><line x1="18" y1="20" x2="18" y2="4"></line><line x1="6" y1="20" x2="6" y2="16"></line></svg>
+            <span>${this.statsText}(${new Set(this.currentResults.map(r => r.file)).size})</span>`;
+        statsLeft.appendChild(rangeStatsSpan);
+        
+        // 分隔符
+        const separator = document.createElement("span");
+        separator.textContent = "|";
+        separator.style.cssText = "color: var(--text-faint); margin: 0 4px;";
+        statsLeft.appendChild(separator);
+        
+        // 分頁統計
+        const paginationStatsSpan = document.createElement("span");
+        paginationStatsSpan.className = "custom-search-pagination-stats";
+        paginationStatsSpan.style.cssText = "display: flex; align-items: center; gap: 6px;";
+        const loadedTotal = this.loadedCount;
+        const collapsedCount = this.getCollapsedLoadedCount();
+        const visibleCount = loadedTotal - collapsedCount;
+        if (collapsedCount > 0) {
+            paginationStatsSpan.innerHTML = `
+                <span>${loadedTotal}/${this.currentResults.length}條(折疊${collapsedCount}條)</span>`;
+        } else {
+            paginationStatsSpan.innerHTML = `
+                <span>${loadedTotal}/${this.currentResults.length}條</span>`;
+        }
+        statsLeft.appendChild(paginationStatsSpan);
+
         // 右側：按鈕組（刷新 + 重新搜索）
         const buttonGroup = statsDiv.createEl("div", {
             attr: { style: "display: flex; align-items: center; gap: 4px;" }
@@ -1885,58 +2022,74 @@ class SearchResultView extends ItemView {
         // 將按鈕組添加到 statsDiv 的右側
         statsDiv.appendChild(buttonGroup);
 
-        // 分組顯示結果
-        const groupedResults = {};
-        for (const result of this.currentResults) {
-            if (!groupedResults[result.file]) {
-                groupedResults[result.file] = [];
-            }
-            groupedResults[result.file].push(result);
-        }
+        // 內容區域
+        const contentArea = scrollArea.createEl("div", { 
+            attr: { 
+                class: "custom-search-content-area",
+                style: "flex: 1;" 
+            } 
+        });
 
-        // 預加載所有文件內容
+        // 預加載所有文件內容（只加載已加載範圍內的文件）
+        const loadedResults = this.allSortedResults.slice(0, this.loadedCount);
         const fileContentsMap = new Map();
-        for (const file of Object.keys(groupedResults)) {
+        const filesInLoadedRange = new Set(loadedResults.map(r => r.file));
+        for (const file of filesInLoadedRange) {
             const fileObj = this.app.vault.getAbstractFileByPath(file);
             if (fileObj instanceof TFile) {
                 const content = await this.app.vault.read(fileObj);
                 fileContentsMap.set(file, content);
             }
         }
+        this.fileContents = fileContentsMap;
 
-        // 內容區域
-        const contentArea = scrollArea.createEl("div", { attr: { style: "flex: 1;" } });
+        // 分組已加載範圍內的結果
+        const groupedResults = new Map();
+        for (const result of loadedResults) {
+            if (!groupedResults.has(result.file)) {
+                groupedResults.set(result.file, []);
+            }
+            groupedResults.get(result.file).push(result);
+        }
 
         // 全局條目索引計數器
         let globalItemIndex = 0;
 
-        // 渲染每個文件
-        for (const [file, items] of Object.entries(groupedResults)) {
-            const fileSection = contentArea.createEl("div", { attr: { style: "margin-top: 5px; margin-bottom: 0px;" } });
+        // 獲取所有文件的順序（基於 allSortedResults 中的出現順序）
+        const fileOrder = [];
+        for (const result of this.allSortedResults) {
+            if (!fileOrder.includes(result.file)) {
+                fileOrder.push(result.file);
+            }
+        }
+
+        // 渲染每個文件（只渲染有已加載結果的文件）
+        for (const file of fileOrder) {
+            const fileResults = groupedResults.get(file);
+            if (!fileResults || fileResults.length === 0) continue;
             
-            const fileHeader = fileSection.createEl("div", { 
-                attr: { style: "display: flex; align-items: center; gap: 4px; margin-bottom: 4px; padding: 4px 0; border-bottom: 1px solid var(--background-modifier-border); flex-wrap: wrap;" } 
-            });
-            // 提取文件名（不含路徑和擴展名）
-            const fileName = file.split('/').pop().replace(/\.md$/, '');
-            const fileNameColor = this.plugin.settings.colors?.fileName || "var(--text-accent)";
-            fileHeader.createEl("h4", { text: `📄 ${fileName}`, attr: { style: `margin: 0; font-size: 13px; color: ${fileNameColor};`, title: file } });
-
-            // 先獲取文件內容
             const fileContent = fileContentsMap.get(file);
+            
+            // 調用公共方法創建文件區域
+            await this.createFileSection(contentArea, file, fileResults, fileContent, globalItemIndex);
+            globalItemIndex += fileResults.length;
+        }
 
-            // 文件級別的模式控制按鈕（在獲取 fileContent 之後調用）
-            await this.createFileModeControls(file, items, fileContent, fileSection, fileHeader);
-
-            /*/ 添加提示文字（替換原來的按鈕組）
-            const tipSpan = fileHeader.createEl("span", { 
-                text: "💡 左側序號：顯示切換", 
-                attr: { style: "font-size: 10px; color: var(--text-muted); margin-left: auto;" } 
-            });*/
-
-            // 渲染每個條目的內容 - 傳入全局起始索引
-            await this.renderFileItems(fileSection, fileHeader, fileContent, items, file, globalItemIndex);
-            globalItemIndex += items.length;
+        // 加載更多按鈕容器
+        const loadMoreContainer = scrollArea.createEl("div", { 
+            attr: { 
+                class: "custom-search-load-more-container",
+                style: "margin-top: 16px; text-align: center;" 
+            } 
+        });
+        
+        const hasMore = this.loadedCount < this.allSortedResults.length;
+        if (hasMore) {
+            this.loadMoreBtn = loadMoreContainer.createEl("button", {
+                text: "➕ 加載更多",
+                attr: { style: "width: 100%; padding: 8px; background: var(--background-secondary); border: 1px solid var(--background-modifier-border); border-radius: 6px; cursor: pointer; font-size: 12px;" }
+            });
+            this.loadMoreBtn.onclick = () => this.loadMoreResults(container);
         }
 
         this.isRendering = false;
@@ -1950,18 +2103,56 @@ class SearchResultView extends ItemView {
         const scrollContainer = this.containerEl.children[1];
         const scrollTop = scrollContainer.scrollTop;
         
-        // 移除該文件區域的所有內容（除了文件頭）
-        const children = Array.from(fileSection.children);
-        for (const child of children) {
-            if (child !== fileHeader) {
-                child.remove();
+        // 獲取條目容器
+        let itemsContainer = fileSection.querySelector('.file-items-container');
+        if (!itemsContainer) {
+            itemsContainer = fileSection.createEl("div", { attr: { class: "file-items-container" } });
+        }
+        
+        // 清空條目容器
+        itemsContainer.empty();
+        
+        // 獲取該文件在已加載範圍內的條目
+        const loadedInFile = this.getLoadedCountInFile(file);
+        const fileResults = this.getFileResults(file);
+        const loadedResults = fileResults.slice(0, loadedInFile);
+        
+        // 獲取全局起始索引
+        let globalStartIndex = 0;
+        for (const result of this.allSortedResults) {
+            if (result.file === file) break;
+            globalStartIndex++;
+        }
+        
+        // 重新渲染條目
+        await this.renderFileItemsInContainer(itemsContainer, file, loadedResults, fileContent, globalStartIndex);
+        
+        // 更新折疊狀態顯示
+        const isCollapsed = this.fileCollapsedState.get(file) || false;
+        itemsContainer.style.display = isCollapsed ? 'none' : 'block';
+        
+        // 更新文件頭統計
+        const totalInFile = fileResults.length;
+        const titleSpan = fileHeader.querySelector('.file-title-span');
+        if (titleSpan) {
+            const fileName = file.split('/').pop().replace(/\.md$/, '');
+            if (loadedInFile < totalInFile) {
+                titleSpan.textContent = `📄 ${fileName} (顯示 ${loadedInFile}/${totalInFile})`;
+            } else if (isCollapsed) {
+                titleSpan.textContent = `📄 ${fileName} (共 ${totalInFile} 條，折疊)`;
+            } else {
+                titleSpan.textContent = `📄 ${fileName} (共 ${totalInFile} 條)`;
             }
         }
-
-        // 重新渲染條目
-        await this.renderFileItems(fileSection, fileHeader, fileContent, items, file);
-
-        // 恢复滾動位置
+        
+        // 更新折疊按鈕圖標
+        const collapseBtn = fileHeader.querySelector('.file-collapse-btn');
+        if (collapseBtn) {
+            collapseBtn.textContent = isCollapsed ? '▶' : '▼';
+            collapseBtn.title = isCollapsed ? '展開' : '折疊';
+        }
+        
+        // 恢復滾動位置
         scrollContainer.scrollTop = scrollTop;
         // 重新渲染後更新可聚焦項目
         this.updateFocusableItems();
@@ -2068,6 +2259,191 @@ class SearchResultView extends ItemView {
             if (hoverTimer) clearTimeout(hoverTimer);
             if (hideTimer) clearTimeout(hideTimer);
         });
+    }
+
+    // 為指定文件創建模式控制按鈕（用於重構後的渲染）
+    async createFileModeControlsForFile(file, items, fileContent, fileSection, fileHeader, controlContainer) {
+        // 獲取顏色配置
+        const colors = this.plugin.settings.colors || DEFAULT_SETTINGS.colors;
+        const modeColors = { A: colors.modeA, B: colors.modeB, C: colors.modeC };
+
+        // 創建一個包裝容器，用於檢測鼠標離開整個區域
+        const hoverZone = controlContainer.createEl("div", {
+            attr: { style: "display: inline-flex; align-items: center; gap: 4px; position: relative;" }
+        });
+
+        // 模式按鈕容器（初始隱藏）- 改為絕對定位向左展開
+        const modeBtnContainer = hoverZone.createEl("div", {
+            attr: { style: `position: absolute; right: 100%; top: 50%; transform: translateY(-50%); display: none; gap: 2px; background: rgba(255, 255, 255, 0.75); padding: 1px 4px; border-radius: 6px; box-shadow: 0 2px 8px rgba(0,0,0,0.15); border: 1px solid var(--background-modifier-border); z-index: 100;` }
+        });
+
+        // 創建 A、B、C 三個模式按鈕
+        const modeNames = { A: "A", B: "B", C: "C" };
+        for (const modeKey of ['A', 'B', 'C']) {
+            // 獲取按鈕文字顏色（使用已配置的序號文字顏色）
+            const btnTextColors = {
+                A: this.plugin.settings.colors?.modeANumberColor || "rgba(28, 27, 34, 0.85)",
+                B: this.plugin.settings.colors?.modeBNumberColor || "rgba(28, 27, 34, 0.85)",
+                C: this.plugin.settings.colors?.modeCNumberColor || "rgba(255, 255, 255, 0.9)"
+            };
+            const textColor = btnTextColors[modeKey];
+            
+            const modeBtn = modeBtnContainer.createEl("button", {
+                text: modeNames[modeKey],
+                attr: { 
+                    style: `padding: 1px 4px; font-size: 11px; border-radius: 4px; cursor: pointer; background: ${modeColors[modeKey]}; color: ${textColor}; border: 1px solid var(--background-modifier-border); line-height: 1;`
+                }
+            });
+            modeBtn.onclick = async (e) => {
+                e.stopPropagation();
+                await this.setAllItemsModeForFile(file, items, fileContent, fileSection, fileHeader, modeKey);
+            };
+        }
+
+        // « 主控制按鈕（固定在右側）
+        const toggleBtn = hoverZone.createEl("button", {
+            text: "«",
+            attr: { 
+                style: "padding: 2px 4px; font-size: 11px; border-radius: 4px; cursor: pointer; background: var(--background-secondary); border: 1px solid var(--background-modifier-border); line-height: 1; position: relative; z-index: 101;"
+            }
+        });
+        
+        // 計時器變量
+        let hoverTimer = null;
+        let hideTimer = null;
+        
+        // 展開功能
+        const showButtons = () => {
+            if (hideTimer) {
+                clearTimeout(hideTimer);
+                hideTimer = null;
+            }
+            if (hoverTimer) {
+                clearTimeout(hoverTimer);
+                hoverTimer = null;
+            }
+            hoverTimer = setTimeout(() => {
+                modeBtnContainer.style.display = "inline-flex";
+                hoverTimer = null;
+            }, 200);
+        };
+        
+        // 折疊功能
+        const hideButtons = () => {
+            if (hoverTimer) {
+                clearTimeout(hoverTimer);
+                hoverTimer = null;
+            }
+            if (hideTimer) {
+                clearTimeout(hideTimer);
+                hideTimer = null;
+            }
+            hideTimer = setTimeout(() => {
+                modeBtnContainer.style.display = "none";
+                hideTimer = null;
+            }, 250);
+        };
+        
+        // 監聽 hoverZone 區域的鼠標進入
+        hoverZone.addEventListener("mouseenter", showButtons);
+        
+        // 監聽 hoverZone 區域的鼠標離開
+        hoverZone.addEventListener("mouseleave", hideButtons);
+        
+        // 儲存清理函數的引用
+        this._cleanupFns = this._cleanupFns || [];
+        this._cleanupFns.push(() => {
+            hoverZone.removeEventListener("mouseenter", showButtons);
+            hoverZone.removeEventListener("mouseleave", hideButtons);
+            if (hoverTimer) clearTimeout(hoverTimer);
+            if (hideTimer) clearTimeout(hideTimer);
+        });
+    }
+
+    // 創建文件區域（公共方法，供 renderResults 和 loadMoreResults 調用）
+    async createFileSection(contentArea, filePath, fileResults, fileContent, startGlobalIndex) {
+        const totalInFile = fileResults.length;
+        const loadedInFile = fileResults.length;  // 調用時傳入的是已加載的結果
+        const isCollapsed = this.fileCollapsedState.get(filePath) || false;
+        
+        const fileSection = contentArea.createEl("div", { 
+            attr: { 
+                class: "file-section",
+                style: "margin-top: 5px; margin-bottom: 0px;",
+                "data-file-path": filePath
+            } 
+        });
+        
+        // 文件頭
+        const fileHeader = fileSection.createEl("div", { 
+            attr: { 
+                class: "file-header",
+                style: "display: flex; align-items: center; gap: 4px; margin-bottom: 4px; padding: 4px 0; border-bottom: 1px solid var(--background-modifier-border); flex-wrap: wrap;" 
+            } 
+        });
+        
+        // 文件名
+        const fileName = filePath.split('/').pop().replace(/\.md$/, '');
+        const fileNameColor = this.plugin.settings.colors?.fileName || "var(--text-accent)";
+        const titleSpan = fileHeader.createEl("h4", { 
+            text: `📄 ${fileName}`,
+            attr: { 
+                class: "file-title-span",
+                style: `margin: 0; font-size: 13px; color: ${fileNameColor}; display: inline-block;`,
+                title: filePath 
+            } 
+        });
+        
+        // 更新統計文本
+        if (loadedInFile < totalInFile) {
+            titleSpan.textContent = `📄 ${fileName} (顯示 ${loadedInFile}/${totalInFile})`;
+        } else if (isCollapsed) {
+            titleSpan.textContent = `📄 ${fileName} (共 ${totalInFile} 條，折疊)`;
+        } else {
+            titleSpan.textContent = `📄 ${fileName} (共 ${totalInFile} 條)`;
+        }
+        
+        // 右側按鈕容器
+        const headerRightContainer = fileHeader.createEl("div", {
+            attr: { style: "display: inline-flex; align-items: center; gap: 4px; margin-left: auto; position: relative;" }
+        });
+        
+        // 折疊按鈕
+        const collapseBtn = headerRightContainer.createEl("button", {
+            text: isCollapsed ? '▶' : '▼',
+            attr: { 
+                class: "file-collapse-btn",
+                style: "padding: 2px 6px; font-size: 11px; border-radius: 4px; cursor: pointer; background: var(--background-secondary); border: 1px solid var(--background-modifier-border); line-height: 1;",
+                title: isCollapsed ? '展開' : '折疊'
+            }
+        });
+        
+        collapseBtn.onclick = async (e) => {
+            e.stopPropagation();
+            const itemsContainer = fileSection.querySelector('.file-items-container');
+            await this.toggleFileCollapse(filePath, fileSection, fileContent, itemsContainer);
+        };
+        
+        // 模式控制按鈕容器
+        const modeControlContainer = headerRightContainer.createEl("div", {
+            attr: { style: "display: inline-flex; align-items: center; gap: 4px; position: relative;" }
+        });
+        
+        // 創建模式控制按鈕
+        await this.createFileModeControlsForFile(filePath, fileResults, fileContent, fileSection, fileHeader, modeControlContainer);
+        
+        // 條目容器
+        const itemsContainer = fileSection.createEl("div", { 
+            attr: { 
+                class: "file-items-container",
+                style: isCollapsed ? "display: none;" : "display: block;" 
+            } 
+        });
+        
+        // 渲染條目
+        await this.renderFileItemsInContainer(itemsContainer, filePath, fileResults, fileContent, startGlobalIndex);
+        
+        return { fileSection, itemsContainer };
     }
 
     // 批量設置文件下所有條目的顯示模式
@@ -2212,6 +2588,141 @@ class SearchResultView extends ItemView {
             lineContainer.appendChild(contentWrapper);
             itemWrapper.appendChild(lineContainer);
             fileSection.appendChild(itemWrapper);
+        }
+    }
+
+    // 在指定容器中渲染文件條目
+    async renderFileItemsInContainer(itemsContainer, file, items, fileContent, startIndex) {
+        for (let idx = 0; idx < items.length; idx++) {
+            const globalIndex = startIndex + idx;
+            const item = items[idx];
+            const itemKey = `${file}|${idx}`;
+            const currentMode = this.itemModes.get(itemKey) || this.globalMode;
+            const contextData = this.getContextLines(fileContent, item.lineNumber, this.currentSearchText, this.isRegexContent, currentMode, this.highlightRegex);
+            
+            const styles = this.getLineDisplayStyle(currentMode);
+            
+            // 外層包裝容器
+            const itemWrapper = document.createElement("div");
+            itemWrapper.style.cssText = "display: flex; align-items: flex-start; gap: 0px; margin-bottom: 2px;";
+            
+            // 序號容器
+            const numberDiv = document.createElement("div");
+            numberDiv.textContent = `${idx + 1}`;
+            numberDiv.style.cssText = `
+                flex-shrink: 0;
+                min-width: 12px;
+                text-align: center;
+                font-size: 10px; 
+                cursor: pointer;
+                user-select: none;
+                background: var(--background-secondary);
+                padding: 2px 4px;
+                border-radius: 4px;
+                margin: 0px 3px 0px -7px;
+            `;
+
+            // 獲取當前模式顏色
+            const colors = this.plugin.settings.colors || DEFAULT_SETTINGS.colors;
+            const modeColors = { A: colors.modeA, B: colors.modeB, C: colors.modeC };
+            numberDiv.style.backgroundColor = modeColors[currentMode];
+            numberDiv.style.opacity = "0.7";
+            
+            // 根據模式設置序號文字顏色
+            const modeNumberColors = { 
+                A: colors.modeANumberColor || "rgba(28, 27, 34, 0.85)",
+                B: colors.modeBNumberColor || "rgba(28, 27, 34, 0.85)",
+                C: colors.modeCNumberColor || "rgba(255, 255, 255, 0.9)"
+            };
+            numberDiv.style.color = modeNumberColors[currentMode];
+
+            // 計算下一個模式的函數
+            const getNextMode = (current, defaultMode) => {
+                const orderFromB = { B: 'C', C: 'A', A: 'B' };
+                const orderFromA = { A: 'B', B: 'C', C: 'A' };
+                if (defaultMode === 'B') {
+                    return orderFromB[current];
+                } else {
+                    return orderFromA[current];
+                }
+            };
+
+            numberDiv.onclick = (e) => {
+                e.stopPropagation();
+                const currentMode = this.itemModes.get(itemKey) || this.globalMode;
+                const newMode = getNextMode(currentMode, this.plugin.settings.defaultDisplayMode);
+                this.itemModes.set(itemKey, newMode);
+                const newColors = this.plugin.settings.colors || DEFAULT_SETTINGS.colors;
+                const newModeColors = { A: newColors.modeA, B: newColors.modeB, C: newColors.modeC };
+                numberDiv.style.backgroundColor = newModeColors[newMode];
+                // 刷新該文件區域
+                const fileSection = itemsContainer.closest('.file-section');
+                if (fileSection) {
+                    const filePathAttr = fileSection.getAttribute('data-file-path');
+                    const allFileItems = this.getFileResults(filePathAttr);
+                    const fileContent = this.fileContents.get(filePathAttr);
+                    this.refreshFileSection(filePathAttr, allFileItems, fileContent, fileSection, fileSection.querySelector('.file-header'));
+                }
+            };
+            
+            itemWrapper.appendChild(numberDiv);
+            
+            // 內容容器
+            const lineContainer = document.createElement("div");
+            lineContainer.setAttribute("style", styles.containerStyle);
+            lineContainer.onclick = () => this.jumpToLine(item.file, item.lineNumber, this.currentSearchText, this.isRegexContent);
+            lineContainer.onmouseenter = () => {
+                const hoverColor = this.plugin.settings.colors?.hoverBg || "var(--background-modifier-hover)";
+                lineContainer.style.backgroundColor = hoverColor;
+                lineContainer.style.borderLeftColor = "var(--interactive-accent)";
+            };
+            lineContainer.onmouseleave = () => {
+                lineContainer.style.backgroundColor = "transparent";
+                lineContainer.style.borderLeftColor = "transparent";
+            };
+            
+            lineContainer.setAttribute('tabindex', '-1');
+            lineContainer.classList.add('search-result-item-focusable');
+            lineContainer.setAttribute('data-item-index', globalIndex);
+            
+            const contentWrapper = document.createElement("div");
+            contentWrapper.style.cssText = "flex: 1; min-width: 0;";
+            
+            if (currentMode === 'A') {
+                const contentSpan = document.createElement("span");
+                contentSpan.style.cssText = styles.contentStyle;
+                await MarkdownRenderer.renderMarkdown(
+                    contextData.content,
+                    contentSpan,
+                    "",
+                    this
+                );
+                contentSpan.classList.add('vibhasa5');
+                contentWrapper.appendChild(contentSpan);
+            } else {
+                for (const ctxLine of contextData.lines) {
+                    const ctxRow = contentWrapper.createEl("div", {
+                        attr: { style: "margin-bottom: 2px; white-space: pre-wrap; word-break: break-all;" }
+                    });
+                    if (ctxLine.isMatchLine) {
+                        const matchBgColor = this.plugin.settings.colors?.matchLineBg || "rgba(19, 198, 255, 0.1)";
+                        ctxRow.style.backgroundColor = matchBgColor;
+                        ctxRow.style.borderRadius = "3px";
+                        ctxRow.style.padding = "0 4px";
+                    }
+                    await MarkdownRenderer.renderMarkdown(
+                        ctxLine.content,
+                        ctxRow,
+                        "",
+                        this
+                    );
+                    ctxRow.classList.add('vibhasa5');
+                }
+            }
+            
+            lineContainer.appendChild(contentWrapper);
+            itemWrapper.appendChild(lineContainer);
+            itemsContainer.appendChild(itemWrapper);
         }
     }
 
@@ -3488,6 +3999,8 @@ class SearchResultView extends ItemView {
             sortedResults = this.sorter.sortResults(results, searchContext);
         }
 
+        // 保存所有排序後的結果
+        this.allSortedResults = sortedResults;
         this.currentResults = sortedResults;
         this.isRegexContent = isRegexContent;
         this.isBooleanQuery = isBooleanQuery;
@@ -3495,6 +4008,11 @@ class SearchResultView extends ItemView {
         this.fileContents.clear();
         this.itemModes.clear();
         this.globalMode = this.plugin.settings.defaultDisplayMode;
+        
+        // 重置分頁和折疊狀態
+        this.resetPagination();
+        this.lastValidWidth = null;
+        
         const container = this.containerEl.children[1];
         if (container) {
             this.renderResults(container);
@@ -3513,7 +4031,436 @@ class SearchResultView extends ItemView {
         // 更新當前歷史索引（傳入 rangeRef）
         this.updateCurrentHistoryIndex(rangeRef);
     }
-    
+
+    // 獲取當前模式對應的批次大小
+    getBatchSizeByMode() {
+        switch (this.globalMode) {
+            case 'A': return 100;
+            case 'B': return 40;
+            case 'C': return 40;
+            default: return 50;
+        }
+    }
+
+    // 重置分頁狀態（重新搜索時調用）
+    resetPagination() {
+        this.loadedCount = Math.min(this.getBatchSizeByMode(), this.allSortedResults.length);
+        this.fileCollapsedState.clear();
+        this.isLoadingMore = false;
+    }
+
+    // 計算指定文件在已加載範圍內的條目數
+    getLoadedCountInFile(filePath) {
+        let count = 0;
+        for (let i = 0; i < this.loadedCount && i < this.allSortedResults.length; i++) {
+            if (this.allSortedResults[i].file === filePath) {
+                count++;
+            }
+        }
+        return count;
+    }
+
+    // 獲取指定文件的所有結果
+    getFileResults(filePath) {
+        return this.allSortedResults.filter(r => r.file === filePath);
+    }
+
+    // 計算折疊文件中已加載的條目總數
+    getCollapsedLoadedCount() {
+        let collapsedTotal = 0;
+        for (const [filePath, isCollapsed] of this.fileCollapsedState) {
+            if (isCollapsed) {
+                collapsedTotal += this.getLoadedCountInFile(filePath);
+            }
+        }
+        return collapsedTotal;
+    }
+
+    // 更新頂部統計信息
+    updateTopStats(container) {
+        const loadedTotal = this.loadedCount;
+        const collapsedCount = this.getCollapsedLoadedCount();
+        const visibleCount = loadedTotal - collapsedCount;
+        
+        // 找到分頁統計的容器
+        let paginationStatsSpan = container.querySelector('.custom-search-pagination-stats');
+        if (paginationStatsSpan) {
+            if (collapsedCount > 0) {
+                paginationStatsSpan.innerHTML = `${loadedTotal}/${this.currentResults.length}條(折疊${collapsedCount}條)`;
+            } else {
+                paginationStatsSpan.innerHTML = `${loadedTotal}/${this.currentResults.length}條`;
+            }
+        }
+    }
+
+    // 檢查並更新加載更多按鈕
+    updateLoadMoreButton(container) {
+        const hasMore = this.loadedCount < this.allSortedResults.length;
+        const loadMoreContainer = container.querySelector('.custom-search-load-more-container');
+        
+        if (loadMoreContainer) {
+            if (hasMore) {
+                if (!this.loadMoreBtn) {
+                    loadMoreContainer.empty();
+                    this.loadMoreBtn = loadMoreContainer.createEl("button", {
+                        text: "➕ 加載更多",
+                        attr: { style: "width: 100%; padding: 8px; margin: 8px 0; background: var(--background-secondary); border: 1px solid var(--background-modifier-border); border-radius: 6px; cursor: pointer; font-size: 12px;" }
+                    });
+                    this.loadMoreBtn.onclick = () => this.loadMoreResults(container);
+                }
+            } else {
+                loadMoreContainer.empty();
+                this.loadMoreBtn = null;
+            }
+        }
+    }
+
+    // 加載更多結果
+    async loadMoreResults(container) {
+        if (this.isLoadingMore) return;
+        if (this.loadedCount >= this.allSortedResults.length) return;
+        
+        this.isLoadingMore = true;
+        
+        const batchSize = this.getBatchSizeByMode();
+        const startIndex = this.loadedCount;
+        const endIndex = Math.min(startIndex + batchSize, this.allSortedResults.length);
+        
+        // 獲取新加載的結果
+        const newResults = this.allSortedResults.slice(startIndex, endIndex);
+        
+        // 按文件分組新結果
+        const groupedNewResults = new Map();
+        for (const result of newResults) {
+            if (!groupedNewResults.has(result.file)) {
+                groupedNewResults.set(result.file, []);
+            }
+            groupedNewResults.get(result.file).push(result);
+        }
+        
+        // 更新全局已加載計數
+        this.loadedCount = endIndex;
+        
+        // 獲取滾動區域
+        const scrollArea = container.querySelector('.custom-search-scroll-area');
+        if (!scrollArea) {
+            this.isLoadingMore = false;
+            return;
+        }
+        
+        // 獲取內容區域
+        let contentArea = scrollArea.querySelector('.custom-search-content-area');
+        if (!contentArea) {
+            this.isLoadingMore = false;
+            return;
+        }
+        
+        // 獲取文件內容緩存（如果需要）
+        const filesToLoad = Array.from(groupedNewResults.keys());
+        for (const filePath of filesToLoad) {
+            if (!this.fileContents.has(filePath)) {
+                const fileObj = this.app.vault.getAbstractFileByPath(filePath);
+                if (fileObj instanceof TFile) {
+                    const content = await this.app.vault.read(fileObj);
+                    this.fileContents.set(filePath, content);
+                }
+            }
+        }
+        
+        // 為每個文件追加新條目
+        let globalItemIndex = this.getCurrentGlobalItemIndex(contentArea);
+        
+        for (const [filePath, newItems] of groupedNewResults) {
+            const isCollapsed = this.fileCollapsedState.get(filePath) || false;
+            const fileSection = contentArea.querySelector(`.file-section[data-file-path="${this.escapeSelector(filePath)}"]`);
+            
+            if (fileSection && !isCollapsed) {
+                // 文件存在且未折疊：追加條目
+                const fileContent = this.fileContents.get(filePath);
+                const itemsContainer = fileSection.querySelector('.file-items-container');
+                if (itemsContainer && fileContent) {
+                    await this.appendFileItems(itemsContainer, filePath, newItems, fileContent, globalItemIndex);
+                    globalItemIndex += newItems.length;
+                }
+            } else if (!fileSection) {
+                // 文件區域不存在，動態創建
+                const fileContent = this.fileContents.get(filePath);
+                const allFileResults = this.getFileResults(filePath);
+                // 注意：傳入的 newItems 只是本次新增的，但創建區域時需要傳入該文件所有已加載的結果
+                const loadedInFile = this.getLoadedCountInFile(filePath);
+                const existingFileResults = allFileResults.slice(0, loadedInFile);
+                
+                const { itemsContainer: newItemsContainer } = await this.createFileSection(
+                    contentArea, filePath, existingFileResults, fileContent, globalItemIndex
+                );
+                globalItemIndex += newItems.length;
+            } else {
+                // 文件被折疊：只更新計數，不追加 DOM
+                globalItemIndex += newItems.length;
+            }
+        }
+        
+        // 更新所有文件頭的統計信息
+        this.updateAllFileHeaders(contentArea);
+        
+        // 更新頂部統計
+        this.updateTopStats(container);
+        
+        // 更新加載更多按鈕
+        this.updateLoadMoreButton(container);
+        
+        // 更新可聚焦項目
+        this.updateFocusableItems();
+        
+        this.isLoadingMore = false;
+    }
+
+    // 獲取當前內容區域的全局條目索引（用於追加渲染）
+    getCurrentGlobalItemIndex(contentArea) {
+        const allItems = contentArea.querySelectorAll('.search-result-item-focusable');
+        return allItems.length;
+    }
+
+    // 轉義 CSS 選擇器中的特殊字符
+    escapeSelector(str) {
+        return str.replace(/[\\"']/g, '\\$&').replace(/[\])}[{(]/g, '\\$&');
+    }
+
+    // 追加文件條目到已存在的文件區域
+    async appendFileItems(itemsContainer, filePath, newItems, fileContent, startIndex) {
+        const fileItemsContainer = itemsContainer;
+        const fileObj = this.app.vault.getAbstractFileByPath(filePath);
+        if (!(fileObj instanceof TFile)) return;
+        
+        for (let idx = 0; idx < newItems.length; idx++) {
+            const globalIndex = startIndex + idx;
+            const item = newItems[idx];
+            const itemKey = `${filePath}|${this.getExistingItemCount(filePath, itemsContainer) + idx}`;
+            const currentMode = this.itemModes.get(itemKey) || this.globalMode;
+            const contextData = this.getContextLines(fileContent, item.lineNumber, this.currentSearchText, this.isRegexContent, currentMode, this.highlightRegex);
+            
+            const styles = this.getLineDisplayStyle(currentMode);
+            
+            // 外層包裝容器
+            const itemWrapper = document.createElement("div");
+            itemWrapper.style.cssText = "display: flex; align-items: flex-start; gap: 0px; margin-bottom: 2px;";
+            
+            // 序號容器
+            const numberDiv = document.createElement("div");
+            const itemIndex = this.getExistingItemCount(filePath, itemsContainer) + idx + 1;
+            numberDiv.textContent = `${itemIndex}`;
+            numberDiv.style.cssText = `
+                flex-shrink: 0;
+                min-width: 12px;
+                text-align: center;
+                font-size: 10px; 
+                cursor: pointer;
+                user-select: none;
+                background: var(--background-secondary);
+                padding: 2px 4px;
+                border-radius: 4px;
+                margin: 0px 3px 0px -7px;
+            `;
+
+            // 獲取當前模式顏色
+            const colors = this.plugin.settings.colors || DEFAULT_SETTINGS.colors;
+            const modeColors = { A: colors.modeA, B: colors.modeB, C: colors.modeC };
+            numberDiv.style.backgroundColor = modeColors[currentMode];
+            numberDiv.style.opacity = "0.7";
+            
+            // 根據模式設置序號文字顏色
+            const modeNumberColors = { 
+                A: colors.modeANumberColor || "rgba(28, 27, 34, 0.85)",
+                B: colors.modeBNumberColor || "rgba(28, 27, 34, 0.85)",
+                C: colors.modeCNumberColor || "rgba(255, 255, 255, 0.9)"
+            };
+            numberDiv.style.color = modeNumberColors[currentMode];
+
+            // 計算下一個模式的函數
+            const getNextMode = (current, defaultMode) => {
+                const orderFromB = { B: 'C', C: 'A', A: 'B' };
+                const orderFromA = { A: 'B', B: 'C', C: 'A' };
+                if (defaultMode === 'B') {
+                    return orderFromB[current];
+                } else {
+                    return orderFromA[current];
+                }
+            };
+
+            const newItemKey = `${filePath}|${this.getExistingItemCount(filePath, itemsContainer) + idx}`;
+            numberDiv.onclick = (e) => {
+                e.stopPropagation();
+                const currentMode = this.itemModes.get(newItemKey) || this.globalMode;
+                const newMode = getNextMode(currentMode, this.plugin.settings.defaultDisplayMode);
+                this.itemModes.set(newItemKey, newMode);
+                const newColors = this.plugin.settings.colors || DEFAULT_SETTINGS.colors;
+                const newModeColors = { A: newColors.modeA, B: newColors.modeB, C: newColors.modeC };
+                numberDiv.style.backgroundColor = newModeColors[newMode];
+                // 刷新該文件區域
+                const fileSection = itemsContainer.closest('.file-section');
+                if (fileSection) {
+                    const filePathAttr = fileSection.getAttribute('data-file-path');
+                    const allFileItems = this.getFileResults(filePathAttr);
+                    const fileContent = this.fileContents.get(filePathAttr);
+                    this.refreshFileSection(filePathAttr, allFileItems, fileContent, fileSection, fileSection.querySelector('.file-header'));
+                }
+            };
+            
+            itemWrapper.appendChild(numberDiv);
+            
+            // 內容容器 - 焦點設置在這裡
+            const lineContainer = document.createElement("div");
+            lineContainer.setAttribute("style", styles.containerStyle);
+            lineContainer.onclick = () => this.jumpToLine(item.file, item.lineNumber, this.currentSearchText, this.isRegexContent);
+            lineContainer.onmouseenter = () => {
+                const hoverColor = this.plugin.settings.colors?.hoverBg || "var(--background-modifier-hover)";
+                lineContainer.style.backgroundColor = hoverColor;
+                lineContainer.style.borderLeftColor = "var(--interactive-accent)";
+            };
+            lineContainer.onmouseleave = () => {
+                lineContainer.style.backgroundColor = "transparent";
+                lineContainer.style.borderLeftColor = "transparent";
+            };
+            
+            // 設置焦點屬性在 lineContainer 上
+            lineContainer.setAttribute('tabindex', '-1');
+            lineContainer.classList.add('search-result-item-focusable');
+            lineContainer.setAttribute('data-item-index', globalIndex);
+            
+            const contentWrapper = document.createElement("div");
+            contentWrapper.style.cssText = "flex: 1; min-width: 0;";
+            
+            if (currentMode === 'A') {
+                const contentSpan = document.createElement("span");
+                contentSpan.style.cssText = styles.contentStyle;
+                await MarkdownRenderer.renderMarkdown(
+                    contextData.content,
+                    contentSpan,
+                    "",
+                    this
+                );
+                contentSpan.classList.add('vibhasa5');
+                contentWrapper.appendChild(contentSpan);
+            } else {
+                for (const ctxLine of contextData.lines) {
+                    const ctxRow = contentWrapper.createEl("div", {
+                        attr: { style: "margin-bottom: 2px; white-space: pre-wrap; word-break: break-all;" }
+                    });
+                    if (ctxLine.isMatchLine) {
+                        const matchBgColor = this.plugin.settings.colors?.matchLineBg || "rgba(19, 198, 255, 0.1)";
+                        ctxRow.style.backgroundColor = matchBgColor;
+                        ctxRow.style.borderRadius = "3px";
+                        ctxRow.style.padding = "0 4px";
+                    }
+                    await MarkdownRenderer.renderMarkdown(
+                        ctxLine.content,
+                        ctxRow,
+                        "",
+                        this
+                    );
+                    ctxRow.classList.add('vibhasa5');
+                }
+            }
+            
+            lineContainer.appendChild(contentWrapper);
+            itemWrapper.appendChild(lineContainer);
+            fileItemsContainer.appendChild(itemWrapper);
+        }
+    }
+
+    // 獲取文件區域已存在的條目數量
+    getExistingItemCount(filePath, itemsContainer) {
+        if (!itemsContainer) return 0;
+        return itemsContainer.querySelectorAll('.search-result-item-focusable').length;
+    }
+
+    // 更新所有文件頭的統計信息
+    updateAllFileHeaders(contentArea) {
+        const fileSections = contentArea.querySelectorAll('.file-section');
+        for (const fileSection of fileSections) {
+            const filePath = fileSection.getAttribute('data-file-path');
+            if (filePath) {
+                const fileResults = this.getFileResults(filePath);
+                const loadedInFile = this.getLoadedCountInFile(filePath);
+                const totalInFile = fileResults.length;
+                const isCollapsed = this.fileCollapsedState.get(filePath) || false;
+                
+                const fileHeader = fileSection.querySelector('.file-header');
+                if (fileHeader) {
+                    const titleSpan = fileHeader.querySelector('.file-title-span');
+                    if (titleSpan) {
+                        let displayText = `📄 ${filePath.split('/').pop().replace(/\.md$/, '')}`;
+                        if (loadedInFile < totalInFile) {
+                            titleSpan.textContent = `${displayText} (顯示 ${loadedInFile}/${totalInFile})`;
+                        } else if (isCollapsed) {
+                            titleSpan.textContent = `${displayText} (共 ${totalInFile} 條，折疊)`;
+                        } else {
+                            titleSpan.textContent = `${displayText} (共 ${totalInFile} 條)`;
+                        }
+                    }
+                    
+                    // 更新折疊按鈕圖標
+                    const collapseBtn = fileHeader.querySelector('.file-collapse-btn');
+                    if (collapseBtn) {
+                        collapseBtn.textContent = isCollapsed ? '▶' : '▼';
+                        collapseBtn.title = isCollapsed ? '展開' : '折疊';
+                    }
+                }
+            }
+        }
+    }
+
+    // 切換文件的折疊狀態
+    async toggleFileCollapse(filePath, fileSection, fileContent, fileItemsContainer) {
+        const isCurrentlyCollapsed = this.fileCollapsedState.get(filePath) || false;
+        const newCollapsedState = !isCurrentlyCollapsed;
+        this.fileCollapsedState.set(filePath, newCollapsedState);
+        
+        if (newCollapsedState) {
+            // 折疊：隱藏條目容器
+            if (fileItemsContainer) {
+                fileItemsContainer.style.display = 'none';
+            }
+        } else {
+            // 展開：顯示條目容器，並確保所有條目都已渲染
+            if (fileItemsContainer) {
+                fileItemsContainer.style.display = 'block';
+                
+                // 檢查是否需要加載更多該文件的條目
+                const fileResults = this.getFileResults(filePath);
+                const loadedInFile = this.getLoadedCountInFile(filePath);
+                const existingItems = fileItemsContainer.querySelectorAll('.search-result-item-focusable').length;
+                
+                if (existingItems < loadedInFile) {
+                    // 需要加載缺失的條目
+                    const missingItems = fileResults.slice(existingItems, loadedInFile);
+                    const fileContent = this.fileContents.get(filePath);
+                    if (fileContent && missingItems.length > 0) {
+                        const currentItemCount = this.getCurrentGlobalItemCount();
+                        await this.appendFileItems(fileItemsContainer, filePath, missingItems, fileContent, currentItemCount);
+                    }
+                }
+            }
+        }
+        
+        // 更新文件頭統計
+        const container = this.containerEl.children[1];
+        if (container) {
+            this.updateAllFileHeaders(container.querySelector('.custom-search-content-area'));
+            this.updateTopStats(container);
+        }
+        
+        // 更新可聚焦項目
+        this.updateFocusableItems();
+    }
+
+    // 獲取當前全局條目總數
+    getCurrentGlobalItemCount() {
+        const container = this.containerEl.children[1];
+        if (!container) return 0;
+        return container.querySelectorAll('.search-result-item-focusable').length;
+    }
+
     // 標記此次更新為主動搜索（需要保存到歷史）
     markAsActiveSearch() {
         this._shouldSaveToHistory = true;
@@ -3522,7 +4469,7 @@ class SearchResultView extends ItemView {
 
 // ==================== 插件設置 ====================
 const DEFAULT_SETTINGS = {
-    version: "2.4.5",  // 主版本.次版本.修訂版本。版本號，用於數據遷移
+    version: "2.4.6",  // 主版本.次版本.修訂版本。版本號，用於數據遷移
 
     enableBooleanQuery: false,  // 布爾查詢默認值
     enableHtmlTagIgnore: false,     // 無視標籤默認值
