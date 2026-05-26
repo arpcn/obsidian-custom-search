@@ -929,6 +929,7 @@ class SearchResultView extends ItemView {
         this.loadedCount = 0;                  // 已掃描到的全局結果位置（包括跳過的折疊文件）
         this.allSortedResults = [];             // 所有排序後的結果（緩存）
         this.fileCollapsedState = new Map();    // 文件路徑 -> 是否折疊
+        this.fileItemsRendered = new Map();  // 記錄哪些文件的條目已渲染（用於懶加載）
         this.isLoadingMore = false;             // 防止重複加載
         this.loadMoreBtn = null;                // 加載更多按鈕的引用
         this.lastValidWidth = null;  // 記錄上次有效寬度，用於避免0→原值的無意義重建
@@ -1104,6 +1105,197 @@ class SearchResultView extends ItemView {
             }
             // B/C模式下寬度變化：無需任何操作，瀏覽器會自動處理換行
         }
+    }
+
+    /**
+     * 全局模式切換時，使用文件級遍歷更新，保留滾動位置和折疊狀態
+     * 目標條目之前的文件只渲染文件頭，目標條目及其之後的文件正常渲染
+     */
+    async switchGlobalMode() {
+        const container = this.containerEl.children[1];
+        if (!container) return;
+
+        // 保存當前視窗最頂部顯示的條目標記（使用文件路徑 + 文件內偏移）
+        const scrollArea = container.querySelector('.custom-search-scroll-area');
+        let topItemMarker = null;  // { filePath, offsetInFile, globalIndex }
+        if (scrollArea) {
+            const focusableItems = scrollArea.querySelectorAll('.search-result-item-focusable');
+            if (focusableItems.length > 0) {
+                const scrollTop = scrollArea.scrollTop;
+                for (let i = 0; i < focusableItems.length; i++) {
+                    const item = focusableItems[i];
+                    const itemTop = item.offsetTop;
+                    if (itemTop >= scrollTop) {
+                        // 獲取該條目所屬的文件和文件內偏移
+                        const fileSection = item.closest('.file-section');
+                        if (fileSection) {
+                            const filePath = fileSection.getAttribute('data-file-path');
+                            // 獲取全局索引
+                            const globalIndexAttr = item.getAttribute('data-item-index');
+                            const globalIndex = globalIndexAttr ? parseInt(globalIndexAttr) : -1;
+                            // 計算該條目在文件內的偏移（第幾個）
+                            const itemsInFile = fileSection.querySelectorAll('.search-result-item-focusable');
+                            let offsetInFile = -1;
+                            for (let j = 0; j < itemsInFile.length; j++) {
+                                if (itemsInFile[j] === item) {
+                                    offsetInFile = j;
+                                    break;
+                                }
+                            }
+                            if (filePath && offsetInFile !== -1 && globalIndex !== -1) {
+                                topItemMarker = { filePath, offsetInFile, globalIndex };
+                            }
+                        }
+                        break;
+                    }
+                }
+            }
+        }
+
+        // 獲取所有文件的路徑列表（按排序後的順序）
+        const allFilePaths = [...new Set(this.allSortedResults.map(r => r.file))];
+        
+        // 獲取目標條目的全局索引和目標文件的起始索引
+        let targetGlobalIndex = -1;
+        let targetFileStartIndex = -1;
+        if (topItemMarker && topItemMarker.globalIndex !== undefined) {
+            targetGlobalIndex = topItemMarker.globalIndex;
+            targetFileStartIndex = this.getFileStartIndex(topItemMarker.filePath);
+        }
+        
+        // 計算需要的 loadedCount
+        const batchSize = this.getBatchSizeByMode();
+        let neededCount = batchSize;
+        
+        if (topItemMarker && targetFileStartIndex !== -1) {
+            // 確保 loadedCount 能覆蓋到目標文件（目標文件的起始索引 + 一批）
+            neededCount = Math.max(neededCount, targetFileStartIndex + batchSize);
+            // 同時也要確保能覆蓋到目標條目（如果目標條目索引更大）
+            if (targetGlobalIndex !== -1 && targetGlobalIndex + batchSize > neededCount) {
+                neededCount = targetGlobalIndex + batchSize;
+            }
+            neededCount = Math.min(neededCount, this.allSortedResults.length);
+        }
+        this.loadedCount = neededCount;
+        
+        // 清空內容區域
+        const contentArea = container.querySelector('.custom-search-content-area');
+        if (contentArea) {
+            contentArea.empty();
+        }
+        
+        // 重置文件條目渲染狀態
+        this.fileItemsRendered.clear();
+        
+        // 獲取在 loadedCount 範圍內的所有文件（去重）
+        const filesInRange = new Set();
+        for (let i = 0; i < this.loadedCount; i++) {
+            if (this.allSortedResults[i]) {
+                filesInRange.add(this.allSortedResults[i].file);
+            }
+        }
+        
+        // 強制包含目標文件（如果存在且不在範圍內）
+        if (topItemMarker && topItemMarker.filePath) {
+            if (!filesInRange.has(topItemMarker.filePath)) {
+                filesInRange.add(topItemMarker.filePath);
+            }
+            // 同時需要確保該文件的內容被加載到 fileContents 中
+            const targetFile = this.app.vault.getAbstractFileByPath(topItemMarker.filePath);
+            if (targetFile instanceof TFile && !this.fileContents.has(topItemMarker.filePath)) {
+                const content = await this.app.vault.read(targetFile);
+                this.fileContents.set(topItemMarker.filePath, content);
+            }
+        }
+        
+        // 只遍歷在 loadedCount 範圍內的文件
+        let globalItemIndex = 0;
+        for (const filePath of filesInRange) {
+            const fileContent = this.fileContents.get(filePath);
+            if (!fileContent) continue;
+            
+            const fileResults = this.getFileResults(filePath);
+            const loadedInFile = this.getLoadedCountInFile(filePath);
+            const loadedResults = fileResults.slice(0, loadedInFile);
+            const fileEndIndex = this.getFileEndIndex(filePath);
+            
+            // 判斷該文件是否需要渲染條目
+            // 條件：文件的結束索引 >= 目標文件的起始索引（即文件在目標文件之後或包含目標文件）
+            const shouldRenderItems = (targetFileStartIndex === -1) || (fileEndIndex >= targetFileStartIndex);
+            
+            // 創建文件區域
+            const { fileSection, itemsContainer } = await this.createFileSection(
+                contentArea, filePath, loadedResults, fileContent, globalItemIndex, !shouldRenderItems
+            );
+            
+            // 如果需要折疊（不渲染條目的文件），設置折疊狀態
+            if (!shouldRenderItems) {
+                this.fileCollapsedState.set(filePath, true);
+                if (itemsContainer) {
+                    itemsContainer.style.display = 'none';
+                }
+                // 更新折疊按鈕圖標
+                const collapseBtn = fileSection.querySelector('.file-collapse-btn');
+                if (collapseBtn) {
+                    collapseBtn.textContent = '▶';
+                    collapseBtn.title = '展開';
+                }
+                // 更新文件頭標題文字
+                const titleSpan = fileSection.querySelector('.file-title-span');
+                if (titleSpan) {
+                    const fileName = filePath.split('/').pop().replace(/\.md$/, '');
+                    titleSpan.textContent = `📄 ${fileName} (共 ${fileResults.length} 條，折疊)`;
+                }
+            } else {
+                this.fileCollapsedState.set(filePath, false);
+            }
+            
+            // 更新全局索引
+            if (shouldRenderItems) {
+                globalItemIndex += loadedResults.length;
+            }
+        }
+        
+        // 更新頂部統計信息
+        this.updateTopStats(container);
+        
+        // 更新可聚焦項目
+        this.updateFocusableItems();
+        
+        // 恢復到之前記錄的位置標記
+        if (scrollArea && topItemMarker) {
+            setTimeout(async () => {
+                // 重新獲取 scrollArea（確保引用有效）
+                const newScrollArea = this.containerEl.children[1]?.querySelector('.custom-search-scroll-area');
+                if (!newScrollArea) return;
+                // 找到對應的文件區域
+                const fileSection = newScrollArea.querySelector(`.file-section[data-file-path="${topItemMarker.filePath}"]`);
+                if (fileSection) {
+                    // 如果條目尚未渲染，先渲染
+                    const fileContent = this.fileContents.get(topItemMarker.filePath);
+                    if (fileContent && this.fileItemsRendered.get(topItemMarker.filePath) !== true) {
+                        await this.renderFileItemsIfNeeded(topItemMarker.filePath, fileSection, fileContent);
+                    }
+                    // 重新獲取條目
+                    const itemsInFile = fileSection.querySelectorAll('.search-result-item-focusable');
+                    if (itemsInFile.length > topItemMarker.offsetInFile) {
+                        const targetItem = itemsInFile[topItemMarker.offsetInFile];
+                        if (targetItem) {
+                            targetItem.scrollIntoView({ block: 'start' });
+                        }
+                    }
+                }
+            }, 100);
+        } else if (scrollArea) {
+            scrollArea.scrollTop = 0;
+        }
+    }
+
+    /**
+     * 獲取文件在列表中的索引（輔助方法）
+     */
+    getFileIndex(filePath, allFilePaths) {
+        return allFilePaths.indexOf(filePath);
     }
 
     /**
@@ -1790,9 +1982,11 @@ class SearchResultView extends ItemView {
             });
             btn.onclick = async () => {
                 const oldBatchSize = this.getBatchSizeByMode();
-                this.globalMode = key;
+                const newMode = key;
+                
+                this.globalMode = newMode;
                 this.itemModes.clear();
-                this.plugin.settings.defaultDisplayMode = key;
+                this.plugin.settings.defaultDisplayMode = newMode;
                 await this.plugin.saveSettings();
                 
                 // 模式切換時處理批次大小變化
@@ -1800,7 +1994,21 @@ class SearchResultView extends ItemView {
                 if (newBatchSize < this.loadedCount) {
                     this.loadedCount = newBatchSize;
                 }
-                this.refreshDisplay(true); // 模式切換時強制重建
+                
+                // 更新所有模式按鈕的高亮狀態
+                const modeBtnGroup = btn.parentElement;
+                if (modeBtnGroup) {
+                    const buttons = modeBtnGroup.querySelectorAll('button');
+                    const activeBorderColor = this.plugin.settings.colors?.activeBorder || "#000000";
+                    buttons.forEach(button => {
+                        const buttonMode = button.textContent;
+                        const isActive = (buttonMode === newMode);
+                        button.style.border = isActive ? `2px solid ${activeBorderColor}` : '1px solid var(--background-modifier-border)';
+                    });
+                }
+                
+                // 使用文件級遍歷更新，而不是：完全重建this.refreshDisplay(true);
+                await this.switchGlobalMode();
             };
         }
 
@@ -2435,7 +2643,7 @@ class SearchResultView extends ItemView {
     }
 
     // 創建文件區域（公共方法，供 renderResults 和 loadMoreResults 調用）
-    async createFileSection(contentArea, filePath, fileResults, fileContent, startGlobalIndex) {
+    async createFileSection(contentArea, filePath, fileResults, fileContent, startGlobalIndex, skipItems = false) {
         const totalInFile = fileResults.length;
         const loadedInFile = fileResults.length;  // 調用時傳入的是已加載的結果
         const isCollapsed = this.fileCollapsedState.get(filePath) || false;
@@ -2476,7 +2684,7 @@ class SearchResultView extends ItemView {
         } else {
             titleSpan.textContent = `📄 ${fileName} (▼${totalInFile})`;
         }
-        
+
         // 文件名懸停效果和點擊折疊/展開
         titleSpan.onmouseenter = () => {
             titleSpan.style.color = "var(--interactive-accent)";
@@ -2489,26 +2697,18 @@ class SearchResultView extends ItemView {
             const itemsContainer = fileSection.querySelector('.file-items-container');
             await this.toggleFileCollapse(filePath, fileSection, fileContent, itemsContainer);
         };
-
+        
         // 右側按鈕容器
         const headerRightContainer = fileHeader.createEl("div", {
             attr: { style: "display: inline-flex; align-items: center; gap: 4px; margin-left: auto; position: relative;" }
         });
-
-        // 模式控制按鈕容器
-        const modeControlContainer = headerRightContainer.createEl("div", {
-            attr: { style: "display: inline-flex; align-items: center; gap: 4px; position: relative;" }
-        });
         
-        // 創建模式控制按鈕
-        await this.createFileModeControlsForFile(filePath, fileResults, fileContent, fileSection, fileHeader, modeControlContainer);
-
         // 折疊按鈕
         const collapseBtn = headerRightContainer.createEl("button", {
             text: isCollapsed ? '▶' : '▼',
             attr: { 
                 class: "file-collapse-btn",
-                style: "padding: 2px 4px; font-size: 9px; border-radius: 4px; cursor: pointer; background: var(--background-secondary); border: 1px solid var(--background-modifier-border); line-height: 1;",
+                style: "padding: 2px 6px; font-size: 11px; border-radius: 4px; cursor: pointer; background: var(--background-secondary); border: 1px solid var(--background-modifier-border); line-height: 1;",
                 title: isCollapsed ? '展開' : '折疊'
             }
         });
@@ -2518,7 +2718,15 @@ class SearchResultView extends ItemView {
             const itemsContainer = fileSection.querySelector('.file-items-container');
             await this.toggleFileCollapse(filePath, fileSection, fileContent, itemsContainer);
         };
-
+        
+        // 模式控制按鈕容器
+        const modeControlContainer = headerRightContainer.createEl("div", {
+            attr: { style: "display: inline-flex; align-items: center; gap: 4px; position: relative;" }
+        });
+        
+        // 創建模式控制按鈕
+        await this.createFileModeControlsForFile(filePath, fileResults, fileContent, fileSection, fileHeader, modeControlContainer);
+        
         // 條目容器
         const itemsContainer = fileSection.createEl("div", { 
             attr: { 
@@ -2527,10 +2735,54 @@ class SearchResultView extends ItemView {
             } 
         });
         
-        // 渲染條目
-        await this.renderFileItemsInContainer(itemsContainer, filePath, fileResults, fileContent, startGlobalIndex);
+        // 根據 skipItems 決定是否渲染條目
+        if (!skipItems) {
+            await this.renderFileItemsInContainer(itemsContainer, filePath, fileResults, fileContent, startGlobalIndex);
+            this.fileItemsRendered.set(filePath, true);
+        } else {
+            this.fileItemsRendered.set(filePath, false);
+        }
         
         return { fileSection, itemsContainer };
+    }
+
+    /**
+     * 懶加載：如果文件的條目尚未渲染，則動態渲染
+     */
+    async renderFileItemsIfNeeded(filePath, fileSection, fileContent) {
+        // 檢查是否已渲染
+        if (this.fileItemsRendered.get(filePath) === true) {
+            return;
+        }
+        
+        const itemsContainer = fileSection.querySelector('.file-items-container');
+        if (!itemsContainer) return;
+        
+        const fileResults = this.getFileResults(filePath);
+        const loadedInFile = this.getLoadedCountInFile(filePath);
+        const loadedResults = fileResults.slice(0, loadedInFile);
+        
+        // 計算該文件在全局中的起始索引
+        const startGlobalIndex = this.getFileStartIndex(filePath);
+        
+        // 渲染條目
+        await this.renderFileItemsInContainer(itemsContainer, filePath, loadedResults, fileContent, startGlobalIndex);
+        this.fileItemsRendered.set(filePath, true);
+        
+        // 更新文件頭統計
+        const fileHeader = fileSection.querySelector('.file-header');
+        if (fileHeader) {
+            const totalInFile = fileResults.length;
+            const fileName = filePath.split('/').pop().replace(/\.md$/, '');
+            const titleSpan = fileHeader.querySelector('.file-title-span');
+            if (titleSpan) {
+                if (loadedInFile < totalInFile) {
+                    titleSpan.textContent = `📄 ${fileName} (顯示 ${loadedInFile}/${totalInFile})`;
+                } else {
+                    titleSpan.textContent = `📄 ${fileName} (共 ${totalInFile} 條)`;
+                }
+            }
+        }
     }
 
     // 批量設置文件下所有條目的顯示模式
@@ -4134,6 +4386,7 @@ class SearchResultView extends ItemView {
         this.loadedCount = Math.min(this.getBatchSizeByMode(), this.allSortedResults.length);
         this.fileCollapsedState.clear();
         this.isLoadingMore = false;
+        this.fileItemsRendered.clear();
     }
 
     // 計算指定文件在已加載範圍內的條目數
@@ -4150,6 +4403,26 @@ class SearchResultView extends ItemView {
     // 獲取指定文件的所有結果
     getFileResults(filePath) {
         return this.allSortedResults.filter(r => r.file === filePath);
+    }
+
+    // 獲取文件在全局結果中的起始索引
+    getFileStartIndex(filePath) {
+        let index = 0;
+        for (const result of this.allSortedResults) {
+            if (result.file === filePath) {
+                return index;
+            }
+            index++;
+        }
+        return -1;
+    }
+    
+    // 獲取文件在全局結果中的結束索引
+    getFileEndIndex(filePath) {
+        const startIndex = this.getFileStartIndex(filePath);
+        if (startIndex === -1) return -1;
+        const fileResults = this.getFileResults(filePath);
+        return startIndex + fileResults.length - 1;
     }
 
     // 計算折疊文件中已加載的條目總數
@@ -4509,23 +4782,18 @@ class SearchResultView extends ItemView {
                 fileItemsContainer.style.display = 'none';
             }
         } else {
-            // 展開：顯示條目容器，並確保所有條目都已渲染
+            // 展開：顯示條目容器，並確保條目已渲染（懶加載）
             if (fileItemsContainer) {
-                fileItemsContainer.style.display = 'block';
-                
-                // 檢查是否需要加載更多該文件的條目
-                const fileResults = this.getFileResults(filePath);
-                const loadedInFile = this.getLoadedCountInFile(filePath);
-                const existingItems = fileItemsContainer.querySelectorAll('.search-result-item-focusable').length;
-                
-                if (existingItems < loadedInFile) {
-                    // 需要加載缺失的條目
-                    const missingItems = fileResults.slice(existingItems, loadedInFile);
-                    const fileContent = this.fileContents.get(filePath);
-                    if (fileContent && missingItems.length > 0) {
-                        const currentItemCount = this.getCurrentGlobalItemCount();
-                        await this.appendFileItems(fileItemsContainer, filePath, missingItems, fileContent, currentItemCount);
+                // 先檢查條目是否已渲染，若未渲染則動態渲染
+                if (this.fileItemsRendered.get(filePath) !== true) {
+                    await this.renderFileItemsIfNeeded(filePath, fileSection, fileContent);
+                    // 重新獲取 itemsContainer（因為可能被重建）
+                    const newItemsContainer = fileSection.querySelector('.file-items-container');
+                    if (newItemsContainer) {
+                        newItemsContainer.style.display = 'block';
                     }
+                } else {
+                    fileItemsContainer.style.display = 'block';
                 }
             }
         }
@@ -5304,7 +5572,7 @@ class CustomSearchPlugin extends Plugin {
             } catch (e) {
                 console.error("[custom-search] 備份配置失敗:", e);
             }
-            
+
             // 重置為默認配置
             this.settings = JSON.parse(JSON.stringify(DEFAULT_SETTINGS));
             await this.saveSettings();
@@ -10194,7 +10462,7 @@ class CustomSearchSettingTab extends PluginSettingTab {
                 
                 // 實時刷新搜索結果視圖
                 const view = this.app.workspace.getLeavesOfType(VIEW_TYPE_SEARCH_RESULT)[0]?.view;
-                if (view && view.currentResults.length > 0) {
+                if (view && view.currentResults && view.currentResults.length > 0) {
                     view.refreshDisplay();
                 }
             };
