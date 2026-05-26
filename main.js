@@ -1941,7 +1941,7 @@ class SearchResultView extends ItemView {
         const visibleCount = loadedTotal - collapsedCount;
         if (collapsedCount > 0) {
             paginationStatsSpan.innerHTML = `
-                <span>${loadedTotal}/${this.currentResults.length}條(折疊${collapsedCount}條)</span>`;
+                <span>${loadedTotal}/${this.currentResults.length}條(▶${collapsedCount})</span>`;
         } else {
             paginationStatsSpan.innerHTML = `
                 <span>${loadedTotal}/${this.currentResults.length}條</span>`;
@@ -2211,11 +2211,11 @@ class SearchResultView extends ItemView {
         if (titleSpan) {
             const fileName = file.split('/').pop().replace(/\.md$/, '');
             if (loadedInFile < totalInFile) {
-                titleSpan.textContent = `📄 ${fileName} (顯示${loadedInFile}/${totalInFile})`;
+                titleSpan.textContent = `📄 ${fileName} (${loadedInFile}/${totalInFile})`;
             } else if (isCollapsed) {
-                titleSpan.textContent = `📄 ${fileName} (折疊${totalInFile}條)`;
+                titleSpan.textContent = `📄 ${fileName} (▶${totalInFile})`;
             } else {
-                titleSpan.textContent = `📄 ${fileName} (${totalInFile}條)`;
+                titleSpan.textContent = `📄 ${fileName} (▼${totalInFile})`;
             }
         }
         
@@ -2470,11 +2470,11 @@ class SearchResultView extends ItemView {
         
         // 更新統計文本
         if (loadedInFile < totalInFile) {
-            titleSpan.textContent = `📄 ${fileName} (顯示${loadedInFile}/${totalInFile})`;
+            titleSpan.textContent = `📄 ${fileName} (${loadedInFile}/${totalInFile})`;
         } else if (isCollapsed) {
-            titleSpan.textContent = `📄 ${fileName} (折疊${totalInFile}條)`;
+            titleSpan.textContent = `📄 ${fileName} (▶${totalInFile})`;
         } else {
-            titleSpan.textContent = `📄 ${fileName} (${totalInFile}條)`;
+            titleSpan.textContent = `📄 ${fileName} (▼${totalInFile})`;
         }
         
         // 文件名懸停效果和點擊折疊/展開
@@ -4173,7 +4173,7 @@ class SearchResultView extends ItemView {
         let paginationStatsSpan = container.querySelector('.custom-search-pagination-stats');
         if (paginationStatsSpan) {
             if (collapsedCount > 0) {
-                paginationStatsSpan.innerHTML = `${loadedTotal}/${this.currentResults.length}條(折疊${collapsedCount}條)`;
+                paginationStatsSpan.innerHTML = `${loadedTotal}/${this.currentResults.length}條(▶${collapsedCount})`;
             } else {
                 paginationStatsSpan.innerHTML = `${loadedTotal}/${this.currentResults.length}條`;
             }
@@ -4478,11 +4478,11 @@ class SearchResultView extends ItemView {
                     if (titleSpan) {
                         let displayText = `📄 ${filePath.split('/').pop().replace(/\.md$/, '')}`;
                         if (loadedInFile < totalInFile) {
-                            titleSpan.textContent = `${displayText} (顯示${loadedInFile}/${totalInFile})`;
+                            titleSpan.textContent = `${displayText} (${loadedInFile}/${totalInFile})`;
                         } else if (isCollapsed) {
-                            titleSpan.textContent = `${displayText} (折疊${totalInFile}條)`;
+                            titleSpan.textContent = `${displayText} (▶${totalInFile})`;
                         } else {
-                            titleSpan.textContent = `${displayText} (${totalInFile}條)`;
+                            titleSpan.textContent = `${displayText} (▼${totalInFile})`;
                         }
                     }
                     
