@@ -1088,11 +1088,9 @@ class SearchResultView extends ItemView {
         if (container && this.currentResults.length > 0) {
             // 判斷是否需要重建：
             // 1. 強制重建（模式切換時）
-            // 2. A模式下寬度變化需要重新計算截取
-            const needsRebuild = forceRebuild || (this.globalMode === 'A');
-            
-            if (needsRebuild) {
-                // 模式切換時處理批次大小變化
+            // 2. A模式下寬度變化需要重新計算截取（但只更新內容，不全量重建）
+            if (forceRebuild) {
+                // 模式切換時需要完全重建
                 const newBatchSize = this.getBatchSizeByMode();
                 if (newBatchSize < this.loadedCount) {
                     this.loadedCount = newBatchSize;
@@ -1100,8 +1098,85 @@ class SearchResultView extends ItemView {
                 await this.renderResults(container);
                 // 重新渲染後更新可聚焦項目
                 this.updateFocusableItems();
+            } else if (this.globalMode === 'A') {
+                // A模式下寬度變化：只更新每行的截取內容，不重建整個視圖
+                await this.updateATruncatedLines(container);
             }
-            // B/C模式下寬度變化：無需任何操作，直接返回
+            // B/C模式下寬度變化：無需任何操作，瀏覽器會自動處理換行
+        }
+    }
+
+    /**
+     * A模式下寬度變化時，只更新每行的截取內容，不重建整個視圖
+     * 這樣可以保留滾動位置、折疊狀態和事件綁定
+     */
+    async updateATruncatedLines(container) {
+        // 獲取所有可聚焦的結果行（這些是 A 模式下的條目）
+        const focusableItems = container.querySelectorAll('.search-result-item-focusable');
+        if (focusableItems.length === 0) return;
+        
+        // 遍歷每個結果行，更新其內容
+        for (let i = 0; i < focusableItems.length; i++) {
+            const lineContainer = focusableItems[i];
+            // 獲取條目索引（從 data-item-index 屬性）
+            const itemIndexAttr = lineContainer.getAttribute('data-item-index');
+            if (!itemIndexAttr) continue;
+            const itemIndex = parseInt(itemIndexAttr);
+            if (isNaN(itemIndex) || itemIndex >= this.currentResults.length) continue;
+            
+            // 獲取該條目的原始數據
+            const result = this.currentResults[itemIndex];
+            if (!result) continue;
+            
+            // 獲取該條目的文件內容
+            let fileContent = this.fileContents.get(result.file);
+            if (!fileContent) {
+                // 如果緩存中沒有，嘗試讀取
+                const fileObj = this.app.vault.getAbstractFileByPath(result.file);
+                if (fileObj instanceof TFile) {
+                    fileContent = await this.app.vault.read(fileObj);
+                    this.fileContents.set(result.file, fileContent);
+                } else {
+                    continue;
+                }
+            }
+            
+            // 獲取該條目的當前模式（可能是獨立切換的模式）
+            const fileResults = this.getFileResults(result.file);
+            const idxInFile = fileResults.findIndex(r => r.lineNumber === result.lineNumber);
+            const itemKey = `${result.file}|${idxInFile}`;
+            const currentMode = this.itemModes.get(itemKey) || this.globalMode;
+            
+            // 只處理 A 模式的條目（其他模式不需要更新）
+            if (currentMode !== 'A') continue;
+            
+            // 重新獲取上下文（會重新計算截取）
+            const contextData = this.getContextLines(
+                fileContent, 
+                result.lineNumber, 
+                this.currentSearchText, 
+                this.isRegexContent, 
+                'A', 
+                this.highlightRegex
+            );
+            
+            // 找到內容容器並更新
+            const contentWrapper = lineContainer.querySelector('div[style*="flex: 1"]');
+            if (!contentWrapper) continue;
+            
+            // 清空並重新渲染
+            contentWrapper.empty();
+            const contentSpan = document.createElement("span");
+            const styles = this.getLineDisplayStyle('A');
+            contentSpan.style.cssText = styles.contentStyle;
+            await MarkdownRenderer.renderMarkdown(
+                contextData.content,
+                contentSpan,
+                "",
+                this
+            );
+            contentSpan.classList.add('vibhasa5');
+            contentWrapper.appendChild(contentSpan);
         }
     }
 
