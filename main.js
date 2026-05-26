@@ -2388,7 +2388,7 @@ class SearchResultView extends ItemView {
             text: `📄 ${fileName}`,
             attr: { 
                 class: "file-title-span",
-                style: `margin: 0; font-size: 13px; color: ${fileNameColor}; display: inline-block;`,
+                style: `margin: 0; font-size: 13px; color: ${fileNameColor}; display: inline-block; cursor: pointer;`,
                 title: filePath 
             } 
         });
@@ -2401,6 +2401,19 @@ class SearchResultView extends ItemView {
         } else {
             titleSpan.textContent = `📄 ${fileName} (${totalInFile}條)`;
         }
+        
+        // 文件名懸停效果和點擊折疊/展開
+        titleSpan.onmouseenter = () => {
+            titleSpan.style.color = "var(--interactive-accent)";
+        };
+        titleSpan.onmouseleave = () => {
+            titleSpan.style.color = fileNameColor;
+        };
+        titleSpan.onclick = async (e) => {
+            e.stopPropagation();
+            const itemsContainer = fileSection.querySelector('.file-items-container');
+            await this.toggleFileCollapse(filePath, fileSection, fileContent, itemsContainer);
+        };
 
         // 右側按鈕容器
         const headerRightContainer = fileHeader.createEl("div", {
