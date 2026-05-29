@@ -8355,6 +8355,22 @@ T44n1851_大乘義章\\d+\\.md
                     if (result.action === 'closed') {
                         // 如果當前引用的範圍被修改了，刷新編輯區
                         if (result.needRefresh && currentRangeForDialog) {
+                            // 如果當前處於「已修改」狀態，只更新名稱，不更新編輯區內容
+                            if (customButtonState.active && customButtonState.isModified) {
+                                // 只更新名稱相關的信息，不覆蓋編輯區
+                                if (result.renamedItem && customButtonState.rangeName === result.renamedItem.oldName) {
+                                    customButtonState.rangeName = result.renamedItem.newName;
+                                    // 更新按鈕顯示
+                                    updateCustomButtonState(customButtonState);
+                                    // 更新 pendingRangeInfo
+                                    if (this.pendingRangeInfo && this.pendingRangeInfo.name === result.renamedItem.oldName) {
+                                        this.pendingRangeInfo.name = result.renamedItem.newName;
+                                    }
+                                }
+                                // 不更新編輯區內容，直接返回
+                                return;
+                            }
+                            // 「未修改」狀態
                             if (currentRangeForDialog.type === 'group') {
                                 const groups = this.settings.fileGroups?.groups || {};
                                 const group = groups[currentRangeForDialog.name];
@@ -8778,11 +8794,29 @@ T44n1851_大乘義章\\d+\\.md
                             currentView.currentRangeDisplay = currentView.currentRangeDisplay.replace(oldName, newName);
                         }
                     }
+
+                    // 更新 pendingRangeInfo（當前主對話框的待處理範圍）
+                    if (plugin.pendingRangeInfo && plugin.pendingRangeInfo.type === 'group' && plugin.pendingRangeInfo.name === oldName) {
+                        plugin.pendingRangeInfo.name = newName;
+                    }
+
                     plugin._dialogRenamedItem = { type: 'group', oldName: oldName, newName: newName };
-                    // 檢查是否重命名了當前主窗口引用的文件組
+
+                    // 檢查是否重命名了當前主窗口直接引用的文件組
                     if (plugin._dialogTargetRangeRef && plugin._dialogTargetRangeRef.type === 'group' && plugin._dialogTargetRangeRef.name === oldName) {
                         plugin._dialogTargetModified = true;
                     }
+
+                    // 檢查是否重命名了當前主窗口引用的組合中所包含的文件組
+                    if (plugin._dialogTargetRangeRef && plugin._dialogTargetRangeRef.type === 'combination') {
+                        const comboName = plugin._dialogTargetRangeRef.name;
+                        const combos = currentCombinations;
+                        const combo = combos[comboName];
+                        if (combo && combo.groups && combo.groups.includes(newName)) {
+                            plugin._dialogTargetModified = true;
+                        }
+                    }
+
                 } else if (type === 'combination') {
                     // 獲取原始順序
                     const comboNames = Object.keys(currentCombinations);
@@ -8801,6 +8835,7 @@ T44n1851_大乘義章\\d+\\.md
                     if (currentDefaultPreset && currentDefaultPreset.type === 'combination' && currentDefaultPreset.name === oldName) {
                         currentDefaultPreset.name = newName;
                     }
+                    
                     // 更新當前結果視圖中的引用
                     const currentView = plugin.currentResultView;
                     if (currentView && currentView.currentRangeRef && 
@@ -8811,12 +8846,21 @@ T44n1851_大乘義章\\d+\\.md
                             currentView.currentRangeDisplay = currentView.currentRangeDisplay.replace(oldName, newName);
                         }
                     }
+
+                    // 更新 pendingRangeInfo（當前主對話框的待處理範圍）
+                    if (plugin.pendingRangeInfo && plugin.pendingRangeInfo.type === 'combination' && plugin.pendingRangeInfo.name === oldName) {
+                        plugin.pendingRangeInfo.name = newName;
+                    }
+
                     plugin._dialogRenamedItem = { type: 'combination', oldName: oldName, newName: newName };
+
                     // 檢查是否重命名了當前主窗口引用的組合
                     if (plugin._dialogTargetRangeRef && plugin._dialogTargetRangeRef.type === 'combination' && plugin._dialogTargetRangeRef.name === oldName) {
                         plugin._dialogTargetModified = true;
                     }
                 }
+                
+                // ========== 以下為公共部分（兩個分支共用） ==========
                 
                 // 更新歷史搜索記錄
                 const history = plugin.settings.searchHistory;
@@ -8829,7 +8873,7 @@ T44n1851_大乘義章\\d+\\.md
                 }
                 
                 // 更新當前打開的結果面板
-                const view = this.app.workspace.getLeavesOfType(VIEW_TYPE_SEARCH_RESULT)[0]?.view;
+                const view = plugin.app.workspace.getLeavesOfType(VIEW_TYPE_SEARCH_RESULT)[0]?.view;
                 if (view && view.currentRangeRef && view.currentRangeRef.type === type && view.currentRangeRef.name === oldName) {
                     view.currentRangeRef.name = newName;
                     if (view.currentRangeDisplay) {
@@ -8838,12 +8882,15 @@ T44n1851_大乘義章\\d+\\.md
                     view.refreshDisplay();
                 }
                 
-                // 立即保存到 data.json
+                // 保存文件組數據到 data.json
                 await plugin.saveCustomFileGroups({ 
                     groups: currentGroups, 
                     combinations: currentCombinations, 
                     defaultPreset: currentDefaultPreset 
                 });
+                
+                // 保存歷史記錄到磁盤
+                await plugin.saveSettings();
                 
                 // 刷新面板
                 renderGroupsPanel();
@@ -8968,6 +9015,15 @@ T44n1851_大乘義章\\d+\\.md
                         // 檢查是否修改了當前主窗口引用的文件組
                         if (plugin._dialogTargetRangeRef && plugin._dialogTargetRangeRef.type === 'group' && plugin._dialogTargetRangeRef.name === groupName) {
                             plugin._dialogTargetModified = true;
+                        }
+                        // 檢查是否修改了當前主窗口引用的組合中所包含的文件組
+                        if (plugin._dialogTargetRangeRef && plugin._dialogTargetRangeRef.type === 'combination') {
+                            const comboName = plugin._dialogTargetRangeRef.name;
+                            const combinations = currentCombinations;
+                            const combo = combinations[comboName];
+                            if (combo && combo.groups && combo.groups.includes(groupName)) {
+                                plugin._dialogTargetModified = true;
+                            }
                         }
                         await plugin.saveCustomFileGroups({ groups: currentGroups, combinations: currentCombinations, defaultPreset: currentDefaultPreset });
                         renderCombinationsPanel();
