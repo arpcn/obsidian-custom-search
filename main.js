@@ -8689,10 +8689,6 @@ T44n1851_大乘義章\\d+\\.md
                 if (validPatterns.length > 0) {
                     this.settings.defaultFilePatterns = validPatterns;
                     await this.saveSettings();
-                    // 檢查是否修改了當前主窗口引用的預定範圍
-                    if (plugin._dialogTargetRangeRef && plugin._dialogTargetRangeRef.type === 'default') {
-                        plugin._dialogTargetModified = true;
-                    }
                     this.filePatterns = validPatterns.map(p => new RegExp(p));
                     this.patternStrings = this.filePatterns.map(p => p.source);
                     new Notice(`已保存 ${validPatterns.length} 個模式到預定範圍`);
