@@ -3,7 +3,7 @@
   "name": "Custom Search",
   "version": "2.4.7",
   "minAppVersion": "0.15.0",
-  "description": "在指定文件範圍內搜索文本，結果顯示在右側邊欄",
+  "description": "在指定文件範圍內精準搜索，針對大倉庫，零索引即時結果，支持忽略 HTML 語法與變音符號，保留渲染。",
   "author": "arpcn",
   "isDesktopOnly": false
 }
