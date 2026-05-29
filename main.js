@@ -1534,6 +1534,9 @@ class SearchResultView extends ItemView {
         // 移除不成對的 HTML 標籤和自定義高亮標記
         result = this.removeUnpairedTagsAndMarkers(result);
         
+        // 去除行首和行尾空格
+        result = result.trimStart().trimEnd();
+        
         return result;
     }
 
@@ -4824,7 +4827,7 @@ class SearchResultView extends ItemView {
 
 // ==================== 插件設置 ====================
 const DEFAULT_SETTINGS = {
-    version: "2.4.6",  // 主版本.次版本.修訂版本。版本號，用於數據遷移
+    version: "2.4.7",  // 主版本.次版本.修訂版本。版本號，用於數據遷移
 
     enableBooleanQuery: false,  // 布爾查詢默認值
     enableHtmlTagIgnore: false,     // 無視標籤默認值
@@ -6400,7 +6403,7 @@ class CustomSearchPlugin extends Plugin {
             if (isBooleanQuery) return regexSource;  // 布爾模式不應用（已通過互斥保證不會同時啟用）
             if (isRegexContent) return regexSource;  // 正則模式不應用（已通過互斥保證不會同時啟用）
             
-            const tagPunctuationPattern = '(?:<[^>]*>|\\p{P}|\\p{S}){0,6}'; // html標簽、標點、md語法*^~`=_[].()
+            const tagPunctuationPattern = '(?:<[^>]*>|\\p{P}|\\p{S}|\\p{Zs}){0,6}'; // html標簽、標點、空格、md語法*^~`=_[].()
             let result = '';
             let i = 0;
             const len = regexSource.length;
