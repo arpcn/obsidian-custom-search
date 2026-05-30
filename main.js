@@ -1014,35 +1014,41 @@ class SearchResultView extends ItemView {
     
     calculateCharWidth(container) {
         if (!container || !this.measureElement) return;
-        const panelRect = container.getBoundingClientRect();
-        const newWidth = panelRect.width;
         
-        // 寬度為0時：記錄但不觸發重建（側邊欄折疊狀態）
-        if (newWidth === 0) {
-            // 不更新 panelWidth，也不觸發重建
-            return;
-        }
+        // 清除之前的定時器，實現防抖
+        if (this._charWidthTimer) clearTimeout(this._charWidthTimer);
         
-        // 寬度大於0時：與上次有效寬度比較
-        if (newWidth === this.lastValidWidth) {
-            // 寬度沒變（例如從0恢復到原值），無需重建
-            return;
-        }
-        
-        // 寬度發生了實質性變化（用戶拖動了邊欄）
-        if (newWidth === this.panelWidth) return;
-        
-        this.panelWidth = newWidth;
-        this.lastValidWidth = newWidth;
-        
-        // 測量一個中文字符的寬度
-        this.measureElement.textContent = '中';
-        const charRect = this.measureElement.getBoundingClientRect();
-        this.charWidth = charRect.width;
-        
-        if (this.panelWidth > 0 && this.charWidth > 0) {
-            this.refreshDisplay();  // 這裡會由 refreshDisplay 內部判斷模式決定是否重建
-        }
+        this._charWidthTimer = setTimeout(() => {
+            const panelRect = container.getBoundingClientRect();
+            const newWidth = panelRect.width;
+            
+            // 寬度為0時：記錄但不觸發重建（側邊欄折疊狀態）
+            if (newWidth === 0) {
+                // 不更新 panelWidth，也不觸發重建
+                return;
+            }
+            
+            // 寬度大於0時：與上次有效寬度比較
+            if (newWidth === this.lastValidWidth) {
+                // 寬度沒變（例如從0恢復到原值），無需重建
+                return;
+            }
+            
+            // 寬度發生了實質性變化（用戶拖動了邊欄）
+            if (newWidth === this.panelWidth) return;
+            
+            this.panelWidth = newWidth;
+            this.lastValidWidth = newWidth;
+            
+            // 測量一個中文字符的寬度
+            this.measureElement.textContent = '中';
+            const charRect = this.measureElement.getBoundingClientRect();
+            this.charWidth = charRect.width;
+            
+            if (this.panelWidth > 0 && this.charWidth > 0) {
+                this.refreshDisplay();  // 這裡會由 refreshDisplay 內部判斷模式決定是否重建
+            }
+        }, 50);  // 50ms 防抖延遲
     }
 
     async onClose() {
@@ -1084,26 +1090,33 @@ class SearchResultView extends ItemView {
     }
 
     async refreshDisplay(forceRebuild = false) {
+        // 防止並發執行
         if (this.isRendering) return;
-        const container = this.containerEl.children[1];
-        if (container && this.currentResults.length > 0) {
-            // 判斷是否需要重建：
-            // 1. 強制重建（模式切換時）
-            // 2. A模式下寬度變化需要重新計算截取（但只更新內容，不全量重建）
-            if (forceRebuild) {
-                // 模式切換時需要完全重建
-                const newBatchSize = this.getBatchSizeByMode();
-                if (newBatchSize < this.loadedCount) {
-                    this.loadedCount = newBatchSize;
+        this.isRendering = true;
+        
+        try {
+            const container = this.containerEl.children[1];
+            if (container && this.currentResults.length > 0) {
+                // 判斷是否需要重建：
+                // 1. 強制重建（模式切換時）
+                // 2. A模式下寬度變化需要重新計算截取（但只更新內容，不全量重建）
+                if (forceRebuild) {
+                    // 模式切換時需要完全重建
+                    const newBatchSize = this.getBatchSizeByMode();
+                    if (newBatchSize < this.loadedCount) {
+                        this.loadedCount = newBatchSize;
+                    }
+                    await this.renderResults(container);
+                    // 重新渲染後更新可聚焦項目
+                    this.updateFocusableItems();
+                } else if (this.globalMode === 'A') {
+                    // A模式下寬度變化：只更新每行的截取內容，不重建整個視圖
+                    await this.updateATruncatedLines(container);
                 }
-                await this.renderResults(container);
-                // 重新渲染後更新可聚焦項目
-                this.updateFocusableItems();
-            } else if (this.globalMode === 'A') {
-                // A模式下寬度變化：只更新每行的截取內容，不重建整個視圖
-                await this.updateATruncatedLines(container);
+                // B/C模式下寬度變化：無需任何操作，瀏覽器會自動處理換行
             }
-            // B/C模式下寬度變化：無需任何操作，瀏覽器會自動處理換行
+        } finally {
+            this.isRendering = false;
         }
     }
 
