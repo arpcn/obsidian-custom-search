@@ -4840,7 +4840,7 @@ class SearchResultView extends ItemView {
 
 // ==================== 插件設置 ====================
 const DEFAULT_SETTINGS = {
-    version: "2.4.7",  // 主版本.次版本.修訂版本。版本號，用於數據遷移
+    version: "2.4.8",  // 主版本.次版本.修訂版本。版本號，用於數據遷移
 
     enableBooleanQuery: false,  // 布爾查詢默認值
     enableHtmlTagIgnore: false,     // 無視標籤默認值
@@ -6506,14 +6506,9 @@ class CustomSearchPlugin extends Plugin {
             }
         } else {
             // 普通文本模式：轉換為正則後搜索
-            let finalPattern;
-            if (enableDiacriticIgnore) {
-                finalPattern = convertPlainTextToIgnoreDiacritics(searchText);
-            } else {
-                finalPattern = searchText.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-            }
-
-            // 「無視標籤」，先刪除指定標點，再應用標籤/標點忽略模式
+            let finalPattern = searchText;
+            
+            // ===== 步驟1：如果啟用「無視標籤」，先刪除標點符號（純文本階段）=====
             if (enableHtmlTagIgnore) {
                 // 先刪除指定標點
                 // 定義要去掉的標點字符集合
@@ -6523,7 +6518,18 @@ class CustomSearchPlugin extends Plugin {
                 // const punctuationToRemoveA = /[，。、；：？！「」『』（）【】,.;:?!]/g; // 備用A：刪除指定標點
                 const punctuationToRemoveB = /<[^>]*>|[\p{P}\p{S}]/gu; // 備用B：刪除 HTML 標簽、所有標點、所有符號
                 finalPattern = finalPattern.replace(punctuationToRemoveB, '');
-                // 再插入忽略模式
+            }
+            
+            // ===== 步驟2：轉義正則特殊字符 =====
+            finalPattern = finalPattern.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            
+            // ===== 步驟3：如果啟用「忽略變音」，轉換為字符組 =====
+            if (enableDiacriticIgnore) {
+                finalPattern = convertPlainTextToIgnoreDiacritics(finalPattern);
+            }
+            
+            // ===== 步驟4：如果啟用「無視標籤」，插入標籤/標點忽略模式 =====
+            if (enableHtmlTagIgnore) {
                 finalPattern = insertTagIgnorePattern(finalPattern);
             }
 
@@ -6546,9 +6552,9 @@ class CustomSearchPlugin extends Plugin {
         if (rangeDisplay) {
             statsText = `${rangeDisplay} | 文件：${searchResult.targetFilesCount}`;
         } else if (isPreset) {
-            statsText = `預定範圍 | 文件：${searchResult.targetFilesCount}`;
+            statsText = `預設 | 文件：${searchResult.targetFilesCount}`;
         } else {
-            statsText = `自定義範圍（${patternsForSearch.includePatterns.length + patternsForSearch.excludePatterns.length}個模式） | 文件：${searchResult.targetFilesCount}`;
+            statsText = `自定義（${patternsForSearch.includePatterns.length + patternsForSearch.excludePatterns.length}個模式） | 文件：${searchResult.targetFilesCount}`;
         }
 
         // 獲取模式數組（用於排序）
@@ -8006,25 +8012,40 @@ T44n1851_大乘義章\\d+\\.md
                     if (typeof setCustomButtonState !== 'undefined' && textareaHasValue && isTextareaVisible) {
                         // 一切就緒，設置按鈕狀態
                         setCustomButtonState(restoreName, restoreType, multiLineTextarea.value);
+                        
+                        // 設置 pendingRangeInfo，讓提交邏輯能識別這是組/組合
+                        this.pendingRangeInfo = {
+                            name: restoreName,
+                            type: restoreType === '文件組' ? 'group' : 'combination',
+                            rangeType: restoreType,
+                            originalPatterns: null,  // null 表示來自歷史恢復
+                            isModified: restoreRangeRef.patternsText !== null  // 是否已修改版本
+                        };
+                        
                         // 清除臨時標記
                         delete this._initialPendingRangeForRestore;
                     } else if (attempts < 10) {
-                        // 還沒準備好，100ms 後重試
                         setTimeout(() => tryRestoreState(attempts + 1), 100);
                     } else {
-                        // 超時後放棄，但清除標記避免重複嘗試
                         delete this._initialPendingRangeForRestore;
-                        // 最後一次嘗試：如果編輯區有值但函數未定義，延遲更長時間
                         if (multiLineTextarea.value && multiLineTextarea.value.trim()) {
                             setTimeout(() => {
                                 if (typeof setCustomButtonState !== 'undefined') {
                                     setCustomButtonState(restoreName, restoreType, multiLineTextarea.value);
+                                    
+                                    this.pendingRangeInfo = {
+                                        name: restoreName,
+                                        type: restoreType === '文件組' ? 'group' : 'combination',
+                                        rangeType: restoreType,
+                                        originalPatterns: null,
+                                        isModified: restoreRangeRef.patternsText !== null
+                                    };
                                 }
                             }, 500);
                         }
                     }
                 };
-                
+
                 // 啟動恢復嘗試（延遲 150ms 確保編輯區已完成展開）
                 setTimeout(() => tryRestoreState(0), 150);
             }
@@ -8272,7 +8293,7 @@ T44n1851_大乘義章\\d+\\.md
                 if (!finalFileNamePatterns) { new Notice('請填寫文件名匹配模式'); return; }
                 await navigator.clipboard.writeText(finalSearchText);
                 if (patternTooltip) patternTooltip.remove();
-                
+
                 // 判斷是否修改
                 let rangeDisplay = null;
                 let rangeRef = null;
@@ -8281,7 +8302,14 @@ T44n1851_大乘義章\\d+\\.md
                     const originalPatterns = this.pendingRangeInfo.originalPatterns;
                     
                     // 比較模式是否相同
-                    const isModified = !this.arraysEqual(currentPatterns, originalPatterns);
+                    let isModified = false;
+                    
+                    if (originalPatterns === null) {
+                        // 從歷史恢復的情況，直接用 isModified 標誌
+                        isModified = this.pendingRangeInfo.isModified || false;
+                    } else {
+                        isModified = !this.arraysEqual(currentPatterns, originalPatterns);
+                    }
                     
                     if (isModified) {
                         // 修改版：保存 patternsText 快照
@@ -8306,11 +8334,11 @@ T44n1851_大乘義章\\d+\\.md
                     rangeRef = { type: "custom", name: null, patternsText: finalFileNamePatterns };
                     rangeDisplay = "自訂";
                 }
-                
+
                 modal.remove();
                 resolve({ type: 'custom_a', searchText: finalSearchText, fileName: finalFileNamePatterns, rangeDisplay: rangeDisplay, rangeRef: rangeRef, isBooleanQuery: isBooleanQuery, enableDiacriticIgnore: enableDiacriticIgnore, enableHtmlTagIgnore: enableHtmlTagIgnore });
             };
-            
+
             customRight.onclick = async () => {
                 clearCustomButtonState(); // 清除自定義範圍按鈕的 📌 狀態
                 const finalSearchText = searchTextInput.value.trim();
@@ -8328,7 +8356,16 @@ T44n1851_大乘義章\\d+\\.md
                 if (this.pendingRangeInfo) {
                     const currentPatterns = parsePatternsToRegexArray(finalFileNamePatterns);
                     const originalPatterns = this.pendingRangeInfo.originalPatterns;
-                    const isModified = !this.arraysEqual(currentPatterns, originalPatterns);
+                    
+                    // 比較模式是否相同
+                    let isModified = false;
+                    
+                    if (originalPatterns === null) {
+                        // 從歷史恢復的情況，直接用 isModified 標誌
+                        isModified = this.pendingRangeInfo.isModified || false;
+                    } else {
+                        isModified = !this.arraysEqual(currentPatterns, originalPatterns);
+                    }
                     
                     if (isModified) {
                         rangeRef = { 
@@ -10405,7 +10442,7 @@ class CustomSearchSettingTab extends PluginSettingTab {
                     attr: { style: "display: flex; justify-content: space-between; align-items: center; padding: 6px 8px; border-bottom: 1px solid var(--background-modifier-border); font-size: 12px;" }
                 });
                 
-                const displayText = `${item.searchText.length > 40 ? item.searchText.substring(0, 37) + "..." : item.searchText} | ${item.rangeDisplay || (item.isPreset ? "預設範圍" : "自定義範圍")}`;
+                const displayText = `${item.searchText.length > 40 ? item.searchText.substring(0, 37) + "..." : item.searchText} | ${item.rangeDisplay || (item.isPreset ? "預設" : "自定義")}`;
                 row.createEl("span", { text: displayText, attr: { style: "font-family: monospace; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" } });
                 
                 const deleteBtn = row.createEl("button", {

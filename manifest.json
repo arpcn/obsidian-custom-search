@@ -1,7 +1,7 @@
 {
   "id": "custom-search",
   "name": "Custom Search",
-  "version": "2.4.7",
+  "version": "2.4.8",
   "minAppVersion": "0.15.0",
   "description": "Zero-index instant search for large vaults. Custom scope, ignore HTML/diacritics, preserve Markdown rendering.",
   "author": "arpcn",
