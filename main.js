@@ -4840,7 +4840,7 @@ class SearchResultView extends ItemView {
 
 // ==================== 插件設置 ====================
 const DEFAULT_SETTINGS = {
-    version: "2.4.8",  // 主版本.次版本.修訂版本。版本號，用於數據遷移
+    version: "2.5.0",  // 主版本.次版本.修訂版本。版本號，用於數據遷移
 
     enableBooleanQuery: false,  // 布爾查詢默認值
     enableHtmlTagIgnore: false,     // 無視標籤默認值
@@ -4924,6 +4924,9 @@ const DEFAULT_SETTINGS = {
         ],
         currentIndex: -1  // 當前激活的歷史索引，-1表示不在歷史中（如新的主動搜索）
     },
+    // 預熱設置
+    prewarmLastSearch: true,  // 預熱功能開關（默認開啟）
+    lastWarmTime: 0,           // 上次有效預熱或有效搜索的時間戳（0 表示從未）
     // 字符寬度設置（用於A模式截取）
     charWidth: {
         // 窄字符範圍（每個折算0.2單位）- 支持單個碼位或 "起始-結束"
@@ -4988,10 +4991,14 @@ class HandwriteQueryModal extends Modal {
         const manualTab = document.createElement('button');
         manualTab.textContent = '✍️ 手動編輯';
         manualTab.style.cssText = `padding: 8px 16px; background: transparent; border: none; cursor: pointer; color: var(--text-muted); font-weight: 500; border-bottom: 2px solid transparent;`;
+        // 選項卡懸停提示（手動編輯與輔助編輯互不影響）
+        manualTab.title = '自由編輯查詢串；與輔助編輯互不影響，除非點「轉入編輯」';
         
         const helperTab = document.createElement('button');
         helperTab.textContent = '🔧 輔助編輯';
         helperTab.style.cssText = `padding: 8px 16px; background: transparent; border: none; cursor: pointer; color: var(--text-muted); font-weight: 500; border-bottom: 2px solid transparent;`;
+        // 選項卡懸停提示（僅單向導出，需主動點「轉入編輯」）
+        helperTab.title = '結構化填寫；點「轉入編輯」才會把結果寫入手動區';
         
         tabContainer.appendChild(manualTab);
         tabContainer.appendChild(helperTab);
@@ -4999,6 +5006,12 @@ class HandwriteQueryModal extends Modal {
         
         const manualPanel = document.createElement('div');
         manualPanel.style.cssText = `display: block;`;
+
+        // 手動編輯區說明（兩標籤獨立 + 提交以當前標籤為準）
+        const manualHint = document.createElement('div');
+        manualHint.style.cssText = `font-size: 11px; color: var(--text-faint); margin-bottom: 6px; line-height: 1.5;`;
+        manualHint.innerHTML = '💡 此區與「🔧 輔助編輯」相互獨立。切換標籤不會同步內容；提交時以當前標籤的內容為準。';
+        manualPanel.appendChild(manualHint);
         
         const queryLabel = document.createElement('div');
         queryLabel.textContent = '📝 搜索查詢（支持Obsidian搜索語法）：';
@@ -5014,6 +5027,12 @@ class HandwriteQueryModal extends Modal {
         
         const helperPanel = document.createElement('div');
         helperPanel.style.cssText = `display: none;`;
+
+        // 輔助編輯區說明（僅單向導出，需主動點「轉入編輯」）
+        const helperHint = document.createElement('div');
+        helperHint.style.cssText = `font-size: 11px; color: var(--text-faint); margin-bottom: 8px; line-height: 1.5;`;
+        helperHint.innerHTML = '💡 填好後點「✍️ 轉入編輯」可把生成的查詢寫入「✍️ 手動編輯」區；不點則兩邊互不影響。';
+        helperPanel.appendChild(helperHint);
         
         const helperStyle = document.createElement('style');
         helperStyle.textContent = `
@@ -5435,7 +5454,11 @@ class HandwriteQueryModal extends Modal {
         helperTab.onclick = () => setActiveTab('helper');
         
         if (this.prefillQuery) setActiveTab('manual');
-        else setTimeout(() => queryTextarea.focus(), 100);
+        else {
+            // 無 prefill 時也初始化提交按鈕文字
+            setActiveTab('manual');
+            setTimeout(() => queryTextarea.focus(), 100);
+        }
     }
 
     onClose() {
@@ -5548,6 +5571,15 @@ class CustomSearchPlugin extends Plugin {
             const s = document.getElementById('custom-search-nav-styles');
             if (s) s.remove();
         });
+
+        // ===== 預熱初始化 =====
+        this.prewarmAbort = false;
+        this.prewarmDone = false;
+        // 觸發點 A：啟動後 2 分鐘
+        setTimeout(() => {
+            this.tryPrewarmByStartup();
+        }, 120000);
+        // ===== 預熱初始化結束 =====
 
     }
 
@@ -5763,6 +5795,8 @@ class CustomSearchPlugin extends Plugin {
     async executeSearchFromDialogResult(result, options = {}) {
         if (!result) return;
         
+        this.prewarmAbort = true;  // 中止正在跑的預熱
+        
         const { skipHistorySave = false, useEmptyPresetPatterns = false } = options;
         
         // 確定 patterns
@@ -5837,6 +5871,10 @@ class CustomSearchPlugin extends Plugin {
         // ===== 可中斷搜索常量 =====
         const SLOW_SEARCH_THRESHOLD = 2000;  // 2秒彈窗閾值
         const STOP_CHECK_INTERVAL = 150;     // 彈窗後每150ms檢查一次停止標志
+
+        // ===== 記錄開始時間（用於判斷是否跑到 2 秒） =====
+        const searchStartTime = performance.now();
+        // ===== 記錄結束 =====
 
         const allFiles = this.app.vault.getMarkdownFiles();
         const results = [];
@@ -6031,7 +6069,7 @@ class CustomSearchPlugin extends Plugin {
                             slowDialogNotice = null;
                         }
                         // 返回已找到的結果
-                        let finalHighlightRegex = highlightRegexForContent;
+                        let finalHighlightRegex = highlightRegex;
                         if (!finalHighlightRegex && contentRegex) {
                             finalHighlightRegex = this.extractHighlightRegex(contentRegex);
                         }
@@ -6040,7 +6078,7 @@ class CustomSearchPlugin extends Plugin {
                         } else {
                             new Notice(`⏹️ 搜索已停止，未找到任何匹配`);
                         }
-                        return { results, targetFilesCount: targetFiles.length, highlightRegex: finalHighlightRegex };
+                        return { results, targetFilesCount: targetFiles.length, highlightRegex: finalHighlightRegex, elapsed: performance.now() - searchStartTime };
                     }
                 }
             }
@@ -6076,7 +6114,7 @@ class CustomSearchPlugin extends Plugin {
             slowDialogNotice = null;
         }
         
-        return { results, targetFilesCount: targetFiles.length, highlightRegex: highlightRegex };
+        return { results, targetFilesCount: targetFiles.length, highlightRegex: highlightRegex, elapsed: performance.now() - searchStartTime };
     }
 
     /**
@@ -6582,6 +6620,18 @@ class CustomSearchPlugin extends Plugin {
             view.updateResults(searchText, searchResult.results, isRegex, statsText, patternsArray, patternsText, isPreset, rangeDisplay, rangeRef, isBooleanQuery, searchResult.highlightRegex, enableDiacriticIgnore, enableHtmlTagIgnore);
         }
 
+        // ===== 實際搜索的有效預熱判斷 =====
+        // 有效 = 有命中結果，或跑到 2 秒仍無結果
+        const isEffectiveWarm = (searchResult.results.length > 0) ||
+            (searchResult.elapsed !== undefined && searchResult.elapsed >= 2000);
+        if (isEffectiveWarm) {
+            this.settings.lastWarmTime = Date.now();
+            await this.saveSettings();
+        }
+        // 無論有效與否，本次啟動已嘗試過搜索（等同預熱嘗試）
+        this.prewarmDone = true;
+        // ===== 判斷結束 =====
+
         return true;
     }
 
@@ -6983,6 +7033,10 @@ class CustomSearchPlugin extends Plugin {
 
     async showSearchModeDialog(selectedText, previousFileName = '', prefillAsMultiLine = false, restoreRangeRef = null, initialBooleanQuery = null, initialDiacriticIgnore = null, initialHtmlTagIgnore = null) {
         const filePatterns = this.filePatterns;
+
+        // ===== 觸發點 B：打開主搜索對話框時嘗試預熱 =====
+        this.tryPrewarmByDialog();
+        // ===== 觸發點 B 結束 =====
         
         // 如果已經存在對話框，更新內容並聚焦，不創建新對話框
         if (this.currentModal && document.body.contains(this.currentModal)) {
@@ -7680,6 +7734,37 @@ class CustomSearchPlugin extends Plugin {
             const hintBtn = document.createElement('button');
             hintBtn.textContent = '📋 查看示例';
             hintBtn.style.cssText = `background: transparent; border: none; color: var(--text-accent); cursor: pointer; font-size: 11px; padding: 2px 6px; border-radius: 4px;`;
+            
+            // 「本文件」按鈕
+            const currentFileBtn = document.createElement('button');
+            currentFileBtn.textContent = '本文件';
+            currentFileBtn.style.cssText = `background: transparent; border: none; color: var(--text-accent); cursor: pointer; font-size: 11px; padding: 2px 6px; border-radius: 4px;`;
+            currentFileBtn.title = '填入當前打開的文件名';
+            
+            // 點擊「本文件」按鈕事件
+            currentFileBtn.onclick = async () => {
+                const activeFile = this.app.workspace.getActiveFile();
+                if (!activeFile || !(activeFile instanceof TFile) || activeFile.extension !== 'md') {
+                    new Notice('請先打開一個 Markdown 文件');
+                    return;
+                }
+                
+                // 獲取純文件名（含 .md 後綴）
+                const fileName = activeFile.name;
+                
+                // 清空編輯區並填入文件名
+                const isActuallyExpanded = multiLineTextarea.style.display === 'block';
+                if (isActuallyExpanded) {
+                    multiLineTextarea.value = fileName;
+                    autoResizeTextarea();
+                } else {
+                    singleLineInput.value = fileName;
+                }
+                // 清除任何待處理的組/組合狀態（純自定義範圍）
+                this.pendingRangeInfo = null;
+                clearCustomButtonState();
+                updateButtonHighlight();
+            };
 
             // 選已有組
             const groupSelect = document.createElement('select');
@@ -7790,6 +7875,7 @@ class CustomSearchPlugin extends Plugin {
             updateGroupSelect();
             
             headerBtnContainer.appendChild(hintBtn);
+            headerBtnContainer.appendChild(currentFileBtn);
             headerBtnContainer.appendChild(groupSelect);
             fileNameHeader.appendChild(headerBtnContainer);
             modal.appendChild(fileNameHeader);
@@ -9540,6 +9626,7 @@ T44n1851_大乘義章\\d+\\.md
     // ==================== 搜索執行函數 ====================
     
     async handleSearch(editor) {
+        this.prewarmAbort = true;  // 中止正在跑的預熱
         const selectedText = editor.getSelection().trim();
         // 如果有選中文本，複製到剪貼板（方便用戶粘貼）
         if (selectedText) {
@@ -9553,6 +9640,7 @@ T44n1851_大乘義章\\d+\\.md
     }
     
     async quickPresetSearch(editor) {
+        this.prewarmAbort = true;  // 中止正在跑的預熱
         const selectedText = editor.getSelection().trim();
         if (!selectedText) {
             new Notice("未選中文本，直接打開搜索面板");
@@ -9567,6 +9655,260 @@ T44n1851_大乘義章\\d+\\.md
         const enableDiacriticIgnore = this.settings.enableDiacriticIgnore || false;
         const enableHtmlTagIgnore = this.settings.enableHtmlTagIgnore || false;
         await this.searchAndShowInSidebar(selectedText, [], true, null, false, rangeRef, isBooleanQuery, enableDiacriticIgnore, enableHtmlTagIgnore);
+    }
+
+    // ==================== 預熱相關方法 ====================
+
+    /**
+     * 觸發點 A：啟動後 2 分鐘檢查
+     */
+    async tryPrewarmByStartup() {
+        // 檢查開關
+        if (!this.settings.prewarmLastSearch) return;
+        // 有歷史
+        const history = this.settings.searchHistory;
+        if (!history || !history.items || history.items.length === 0) return;
+        // 本次啟動未預熱過
+        if (this.prewarmDone) return;
+        await this.runPrewarm();
+    }
+
+    /**
+     * 觸發點 B：打開主搜索對話框時檢查
+     */
+    async tryPrewarmByDialog() {
+        if (!this.settings.prewarmLastSearch) return;
+        const history = this.settings.searchHistory;
+        if (!history || !history.items || history.items.length === 0) return;
+
+        // prewarmDone === false，或距上次有效預熱/搜索 ≥1 小時，任一成立即觸發
+        const now = Date.now();
+        const needPrewarm = (!this.prewarmDone) ||
+            (now - (this.settings.lastWarmTime || 0) >= 60 * 60 * 1000);
+        if (!needPrewarm) return;
+
+        // 非同步執行，不卡對話框
+        setTimeout(() => {
+            // 再次檢查（避免 setTimeout 期間狀態變化）
+            const now2 = Date.now();
+            const need2 = (!this.prewarmDone) ||
+                (now2 - (this.settings.lastWarmTime || 0) >= 60 * 60 * 1000);
+            if (!need2) return;
+            this.runPrewarm().catch(() => {});
+        }, 0);
+    }
+
+    /**
+     * 執行預熱（回溯最多三條歷史）
+     */
+    async runPrewarm() {
+        const history = this.settings.searchHistory;
+        if (!history || !history.items || history.items.length === 0) return;
+
+        this.prewarmAbort = false;
+        this.prewarmDone = true;  // 標記本次啟動已嘗試預熱（不論成敗）
+
+        const maxTries = Math.min(3, history.items.length);
+        for (let i = 0; i < maxTries; i++) {
+            if (this.prewarmAbort) return;  // 被手動搜索中止
+            const item = history.items[i];
+            if (!item) continue;
+
+            const result = await this.prewarmOneHistory(item);
+            if (result === 'valid') {
+                // 有效預熱：更新 lastWarmTime
+                this.settings.lastWarmTime = Date.now();
+                await this.saveSettings();
+                return;
+            }
+            // result === 'invalid'：繼續下一條
+        }
+        // 三條都無效：不更新 lastWarmTime
+    }
+
+    /**
+     * 對單條歷史執行預熱
+     * @returns {Promise<'valid'|'invalid'>} valid = 有命中或跑到 2 秒；invalid = 未到 2 秒且 0 命中
+     */
+    async prewarmOneHistory(historyItem) {
+        const deadline = performance.now() + 2000;
+        let hasMatch = false;
+
+        try {
+            // 復用現有邏輯解析範圍與正則
+            const rangeRef = historyItem.rangeRef;
+            const searchText = historyItem.searchText;
+            const isBooleanQuery = historyItem.isBooleanQuery || false;
+            const enableDiacriticIgnore = historyItem.enableDiacriticIgnore || false;
+            const enableHtmlTagIgnore = historyItem.enableHtmlTagIgnore || false;
+
+            // 獲取 patterns
+            let patternsText = '';
+            if (rangeRef && rangeRef.type === 'default') {
+                patternsText = (this.settings.defaultFilePatterns || []).join('\n');
+            } else if (rangeRef && rangeRef.type === 'group' && !rangeRef.patternsText) {
+                const group = this.settings.fileGroups?.groups?.[rangeRef.name];
+                if (!group || !group.patterns || group.patterns.length === 0) return 'invalid';
+                patternsText = group.patterns.join('\n');
+            } else if (rangeRef && rangeRef.type === 'combination' && !rangeRef.patternsText) {
+                const combo = this.settings.fileGroups?.combinations?.[rangeRef.name];
+                if (!combo || !combo.groups || combo.groups.length === 0) return 'invalid';
+                const allPatterns = [];
+                for (const gn of combo.groups) {
+                    const g = this.settings.fileGroups?.groups?.[gn];
+                    if (g && g.patterns) allPatterns.push(...g.patterns);
+                }
+                if (allPatterns.length === 0) return 'invalid';
+                patternsText = allPatterns.join('\n');
+            } else if (rangeRef && rangeRef.patternsText) {
+                patternsText = rangeRef.patternsText;
+            } else if (historyItem.patternsText) {
+                patternsText = historyItem.patternsText;
+            } else {
+                return 'invalid';
+            }
+
+            // 解析模式
+            const patternsForSearch = parsePatternsWithExcludes(patternsText);
+            if (patternsForSearch.includePatterns.length === 0 && patternsForSearch.excludePatterns.length === 0) {
+                return 'invalid';
+            }
+
+            // 生成 contentRegex（復用 searchAndShowInSidebar 的邏輯精簡版）
+            const isRegexContent = isRegexPattern(searchText);
+            let contentRegex = null;
+
+            if (isBooleanQuery) {
+                const booleanRegex = this.parseBooleanQuery(searchText, enableDiacriticIgnore);
+                if (booleanRegex) contentRegex = booleanRegex;
+            } else if (isRegexContent) {
+                let finalSource = searchText;
+                if (enableDiacriticIgnore) {
+                    finalSource = convertRegexToIgnoreDiacritics(searchText);
+                }
+                try {
+                    contentRegex = new RegExp(finalSource, 'iu');
+                } catch (e) {
+                    return 'invalid';
+                }
+            } else {
+                let finalPattern = searchText;
+                if (enableHtmlTagIgnore) {
+                    const punctuationToRemoveB = /<[^>]*>|[\p{P}\p{S}]/gu;
+                    finalPattern = finalPattern.replace(punctuationToRemoveB, '');
+                }
+                finalPattern = finalPattern.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+                if (enableDiacriticIgnore) {
+                    finalPattern = convertPlainTextToIgnoreDiacritics(finalPattern);
+                }
+                if (enableHtmlTagIgnore) {
+                    // 簡化版：不插入標籤忽略模式，僅用於預熱，不影響結果
+                }
+                try {
+                    contentRegex = new RegExp(finalPattern, 'iu');
+                } catch (e) {
+                    return 'invalid';
+                }
+            }
+
+            if (!contentRegex) return 'invalid';
+
+            // 獲取目標檔案（復用 searchInFiles 的檔案過濾邏輯精簡版）
+            const allFiles = this.app.vault.getMarkdownFiles();
+            const includeInfo = patternsForSearch.includePatterns.map(p => ({
+                regex: p,
+                isPathPattern: p.source.includes('/')
+            }));
+            const excludeInfo = patternsForSearch.excludePatterns.map(p => ({
+                regex: p,
+                isPathPattern: p.source.includes('/')
+            }));
+
+            let targetFiles = [];
+            const mode = patternsForSearch.mode;
+            if (mode === 'include-only') {
+                targetFiles = allFiles.filter(file => {
+                    for (const info of includeInfo) {
+                        const target = info.isPathPattern ? file.path : file.name;
+                        if (info.regex.test(target)) return true;
+                    }
+                    return false;
+                });
+            } else if (mode === 'exclude-only') {
+                targetFiles = allFiles.filter(file => {
+                    for (const info of excludeInfo) {
+                        const target = info.isPathPattern ? file.path : file.name;
+                        if (info.regex.test(target)) return false;
+                    }
+                    return true;
+                });
+            } else if (mode === 'exclude-first') {
+                const afterExclude = allFiles.filter(file => {
+                    for (const info of excludeInfo) {
+                        const target = info.isPathPattern ? file.path : file.name;
+                        if (info.regex.test(target)) return false;
+                    }
+                    return true;
+                });
+                targetFiles = afterExclude.filter(file => {
+                    for (const info of includeInfo) {
+                        const target = info.isPathPattern ? file.path : file.name;
+                        if (info.regex.test(target)) return true;
+                    }
+                    return false;
+                });
+            } else if (mode === 'exclude-last') {
+                const afterInclude = allFiles.filter(file => {
+                    for (const info of includeInfo) {
+                        const target = info.isPathPattern ? file.path : file.name;
+                        if (info.regex.test(target)) return true;
+                    }
+                    return false;
+                });
+                targetFiles = afterInclude.filter(file => {
+                    for (const info of excludeInfo) {
+                        const target = info.isPathPattern ? file.path : file.name;
+                        if (info.regex.test(target)) return false;
+                    }
+                    return true;
+                });
+            }
+
+            if (targetFiles.length === 0) return 'invalid';
+
+            // 掃描檔案
+            for (const file of targetFiles) {
+                if (this.prewarmAbort) return hasMatch ? 'valid' : 'invalid';
+                if (performance.now() > deadline) return 'valid';  // 跑到 2 秒，視為有效
+
+                let content;
+                try {
+                    content = await this.app.vault.read(file);
+                } catch (e) {
+                    continue;  // 讀檔失敗，跳過
+                }
+                const lines = content.split('\n');
+                for (const line of lines) {
+                    if (contentRegex.test(line)) {
+                        hasMatch = true;
+                        break;  // 命中即可，不需繼續此行
+                    }
+                }
+                if (hasMatch) {
+                    // 已命中，但繼續跑（為了熱更多行），直到 deadline 或掃完
+                    // 這裡可選擇提前返回 valid，但為了熱更多路徑，繼續掃描
+                }
+                if (performance.now() > deadline) return 'valid';
+            }
+
+            // 掃完所有檔案
+            if (hasMatch) return 'valid';
+            // 未命中且未到 2 秒 → invalid（讓上層換下一條）
+            if (performance.now() < deadline) return 'invalid';
+            return 'valid';
+        } catch (e) {
+            return 'invalid';
+        }
     }
 }
 
@@ -9752,6 +10094,17 @@ class CustomSearchSettingTab extends PluginSettingTab {
                 .setValue(this.plugin.settings.defaultDisplayMode)
                 .onChange(async (value) => {
                     this.plugin.settings.defaultDisplayMode = value;
+                    await this.plugin.saveSettings();
+                }));
+
+        // 預熱開關
+        new Setting(searchPanel)
+            .setName("啟動後預熱最近搜索")
+            .setDesc("開啟後，Obsidian 啟動 2 分鐘後，或打開搜索對話框時，會靜默預熱最近一條歷史搜索（最多 2 秒），以提升首次搜索速度。")
+            .addToggle(toggle => toggle
+                .setValue(this.plugin.settings.prewarmLastSearch)
+                .onChange(async (value) => {
+                    this.plugin.settings.prewarmLastSearch = value;
                     await this.plugin.saveSettings();
                 }));
 
@@ -10715,6 +11068,17 @@ class CustomSearchSettingTab extends PluginSettingTab {
             • 路徑匹配（包含 / ）：<code>^kosa\\/ju\\/</code><br>
             • 註釋行以 # 開頭<br>
             • 修改後需要重新啟動插件或重新搜索才能生效
+        `;
+
+        // 手寫查詢（手動編輯 vs 輔助編輯）說明
+        const handwriteHelp = helpPanel.createEl("div", {
+            attr: { style: "margin-top: 20px; padding: 10px; background: var(--background-secondary); border-radius: 6px; font-size: 12px;" }
+        });
+        handwriteHelp.innerHTML = `
+            <strong>✍️ 手寫查詢：手動編輯 vs 輔助編輯</strong><br>
+            <strong>兩者相互獨立：</strong>切換選項卡不會同步或覆蓋對方內容，提交時以「當前可見標籤」的內容為準。<br>
+            <strong>唯一的貫通點：</strong>在「輔助編輯」填好條件後，點「✍️ 轉入編輯」才會把生成的查詢串寫入「手動編輯」區，並自動切換過去。<br>
+            <strong>為什麼只做單向（輔助→手動）：</strong>輔助編輯是「結構化條件 → 扁平查詢串」的有損轉換（修飾符作用域、括號分組、多行 AND/OR 邊界等資訊在生成後無法可靠還原），反向解析容易誤改用戶手寫的查詢，因此不做「手動→輔助」的導入。
         `;
 
         // GitHub 鏈接
